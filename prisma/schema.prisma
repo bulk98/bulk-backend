@@ -1,0 +1,153 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../node_modules/.prisma/client"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// --- ENUMS ---
+
+// NUEVO: Enum para el tipo de usuario global. Reemplaza el String.
+enum UserType {
+  OG   // Antes "GURU"
+  CREW // Antes "MEMBER"
+}
+
+// SIN CAMBIOS: Los roles dentro de una comunidad se mantienen como están.
+enum RoleInCommunity {
+  CREATOR
+  MODERATOR
+  MEMBER
+}
+
+enum ReactionType {
+  LIKE
+}
+
+// --- MODELOS ACTUALIZADOS ---
+
+model User {
+  id                      String                 @id @default(auto()) @map("_id") @db.ObjectId
+  email                   String                 @unique
+  password                String
+  createdAt               DateTime               @default(now())
+
+  // --- CAMPO tipo_usuario AHORA USA EL NUEVO ENUM ---
+  tipo_usuario            UserType
+
+  // --- NUEVOS CAMPOS DE IDENTIDAD Y PERFIL ---
+  name                    String?                // Nombre y Apellido
+  username                String?                @unique // El @usuario público, debe ser único
+  bio                     String?                // Biografía
+  fechaDeNacimiento       DateTime?
+  paisDeNacimiento        String?
+  ciudadDeNacimiento      String?
+  domicilio               String?
+  celular                 String?
+  
+  // --- CAMPOS DE AVATAR (EXISTENTES) ---
+  avatarUrl               String?
+  avatarPublicId          String?
+
+  // --- RELACIONES (SIN CAMBIOS) ---
+  createdCommunities      Community[]            @relation("CreatedCommunities")
+  memberships             CommunityMembership[]
+  suscritoAComunidadesIds String[]               @db.ObjectId
+  posts                   Post[]                 @relation("PostAuthor")
+  comments                Comment[]              @relation("CommentAuthor")
+  reactions               Reaction[]
+}
+
+model CommunityMembership {
+  id                      String                 @id @default(auto()) @map("_id") @db.ObjectId
+  role                    RoleInCommunity        @default(MEMBER) // Se mantiene como MEMBER según tu indicación
+  assignedAt              DateTime               @default(now())
+  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                  String                 @db.ObjectId
+  community               Community              @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  communityId             String                 @db.ObjectId
+  canPublishPremiumContent Boolean               @default(false)
+
+  @@unique([userId, communityId])
+  @@index([communityId])
+  @@index([userId])
+}
+
+model Community {
+  id               String                @id @default(auto()) @map("_id") @db.ObjectId
+  name             String                @unique
+  description      String?
+  createdAt        DateTime              @default(now())
+  esPublica        Boolean               @default(true)
+  
+  // --- NUEVO CAMPO DE CATEGORÍA ---
+  categoria        String?               // Categoría/Nicho de la comunidad
+
+  idiomaPrincipal  String?
+  idiomaSecundario String?
+
+  // --- CAMPOS DE IMÁGENES (EXISTENTES) ---
+  logoUrl          String?
+  logoPublicId     String?
+  bannerUrl        String?
+  bannerPublicId   String?
+
+  // --- RELACIONES (SIN CAMBIOS) ---
+  createdBy        User                  @relation("CreatedCommunities", fields: [createdById], references: [id])
+  createdById      String                @db.ObjectId
+  memberships      CommunityMembership[]
+  posts            Post[]                @relation("CommunityPosts")
+}
+
+// --- El resto de los modelos (Post, Comment, Reaction) no necesitan cambios en este paso ---
+model Post {
+  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  title         String
+  content       String
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  esPremium     Boolean   @default(false)
+  imageUrl      String?
+  imagePublicId String?
+  author        User      @relation("PostAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  authorId      String    @db.ObjectId
+  community     Community @relation("CommunityPosts", fields: [communityId], references: [id], onDelete: Cascade)
+  communityId   String    @db.ObjectId
+  comments      Comment[] @relation("PostComments")
+  reactions     Reaction[]
+
+  @@index([communityId, createdAt])
+  @@index([authorId])
+}
+
+model Comment {
+  id        String   @id @default(auto()) @map("_id") @db.ObjectId
+  content   String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  author    User     @relation("CommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
+  authorId  String   @db.ObjectId
+  post      Post     @relation("PostComments", fields: [postId], references: [id], onDelete: Cascade)
+  postId    String   @db.ObjectId
+
+  @@index([postId, createdAt])
+}
+
+model Reaction {
+  id        String       @id @default(auto()) @map("_id") @db.ObjectId
+  type      ReactionType
+  createdAt DateTime     @default(now())
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String       @db.ObjectId
+  post      Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  postId    String       @db.ObjectId
+
+  @@unique([userId, postId])
+  @@index([postId])
+  @@index([userId])
+}

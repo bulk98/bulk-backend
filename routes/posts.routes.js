@@ -51,129 +51,82 @@ const upload = multer({
 });
 
 
-// --- Endpoint para Crear una Publicación (Post) dentro de una Comunidad ---
+// --- Endpoint para Crear una Publicación (VERSIÓN FINAL Y CORRECTA) ---
 router.post(
   '/comunidades/:communityId/posts',
   authenticateToken,
-  upload.single('postImage'), // Middleware de Multer para el campo 'postImage'
+  upload.single('postImage'),
   [
     param('communityId').isMongoId().withMessage('El ID de la comunidad no es válido.'),
     body('title').trim().notEmpty().withMessage('El título es obligatorio.'),
     body('content').trim().notEmpty().withMessage('El contenido es obligatorio.'),
-    body('esPremium').optional().isBoolean().withMessage('esPremium debe ser booleano (true/false).').toBoolean()
   ],
   async (req, res) => {
-    // Manejo de error de validación de tipo de archivo de Multer
     if (req.fileValidationError) {
-      if (req.file && req.file.path && fs.existsSync(req.file.path)) {
-        fs.unlinkSync(req.file.path); // Eliminar archivo temporal si la validación del tipo falló
-      }
-      return res.status(400).json({ errors: [{ msg: req.fileValidationError, path: 'postImage', location: 'file' }] });
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ errors: [{ msg: req.fileValidationError }] });
     }
-    
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
-        // Si hay errores de validación de express-validator, y se subió un archivo, eliminarlo.
-        if (req.file && req.file.path && fs.existsSync(req.file.path)) { 
-            fs.unlinkSync(req.file.path);
-        }
-        return res.status(400).json({ errors: errors.array() });
+      if (req.file) fs.unlinkSync(req.file.path);
+      return res.status(400).json({ errors: errors.array() });
     }
 
-    const communityId = req.params.communityId;
-    const authorId = req.userId; // ID del usuario que hace la petición
-    const { title, content, esPremium } = req.body;
+    const { communityId } = req.params;
+    const authorId = req.userId;
+    const { title, content, esPremium } = req.body; // esPremium llegará como string "true" o undefined
 
     let tempFilePath = req.file ? req.file.path : null;
     let cloudinaryResponse = null;
 
-    console.log(`BACKEND (Crear Post): Usuario ${authorId} intentando postear en comunidad ${communityId}. Premium: ${esPremium}`);
-
     try {
-        // 1. Verificar que la comunidad exista
-        const comunidadExistente = await prisma.community.findUnique({
-            where: { id: communityId },
-            select: { id: true, createdById: true }
-        });
+        const [comunidad, autorDetails, userMembership] = await Promise.all([
+            prisma.community.findUnique({ where: { id: communityId }, select: { createdById: true } }),
+            prisma.user.findUnique({ where: { id: authorId }, select: { tipo_usuario: true } }),
+            prisma.communityMembership.findUnique({ where: { userId_communityId: { userId: authorId, communityId: communityId } }, select: { role: true, canPublishPremiumContent: true } })
+        ]);
 
-        if (!comunidadExistente) {
-            if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        if (!comunidad) {
+            if (tempFilePath) fs.unlinkSync(tempFilePath);
             return res.status(404).json({ error: 'Comunidad no encontrada.' });
         }
 
-        // 2. Verificar permisos para crear posts en esta comunidad
-        let userMembershipInCommunity = null;
-        let canPost = false;
+        const isCreator = comunidad.createdById === authorId;
+        const isModerator = userMembership?.role === RoleInCommunity.MODERATOR;
 
-        if (comunidadExistente.createdById === authorId) { // El usuario es el CREADOR de la comunidad
-            canPost = true;
-            console.log(`BACKEND (Crear Post): Usuario ${authorId} es CREATOR de la comunidad ${communityId}.`);
-        } else { // Verificar si es MODERATOR
-            userMembershipInCommunity = await prisma.communityMembership.findUnique({
-                where: { userId_communityId: { userId: authorId, communityId: communityId } },
-                // Seleccionar role y el nuevo permiso canPublishPremiumContent
-                select: { role: true, canPublishPremiumContent: true }
-            });
-            if (userMembershipInCommunity && userMembershipInCommunity.role === RoleInCommunity.MODERATOR) {
-                canPost = true;
-            }
+        if (!isCreator && !isModerator) {
+            if (tempFilePath) fs.unlinkSync(tempFilePath);
+            return res.status(403).json({ error: 'No tienes permiso para crear publicaciones en esta comunidad.' });
         }
 
-        if (!canPost) {
-            if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
-            console.log(`BACKEND (Crear Post): Usuario ${authorId} (Membresía: ${JSON.stringify(userMembershipInCommunity)}) no tiene permiso para postear en ${communityId}.`);
-            return res.status(403).json({ error: 'No tienes permiso para crear publicaciones en esta comunidad. Solo creadores o moderadores pueden.' });
-        }
-        console.log(`BACKEND (Crear Post): Usuario ${authorId} (Rol en comunidad inferido o Creador) tiene permiso para crear post.`);
+        // Lógica de permisos correcta y limpia
+        const canMarkAsPremium = (autorDetails?.tipo_usuario === UserType.OG) || (isModerator && userMembership?.canPublishPremiumContent === true);
+        const intendsToPostPremium = esPremium === 'true';
+        const finalIsPremium = canMarkAsPremium && intendsToPostPremium;
 
-        // 3. Verificar permiso para marcar como premium
-          let canMarkAsPremium = false;
-    if (esPremium === true) {
-        const autorDetails = await prisma.user.findUnique({
-            where: { id: authorId },
-            select: { tipo_usuario: true }
-        });
-        
-        // Se cambia la comprobación de 'GURU' a UserType.OG
-        if (autorDetails && autorDetails.tipo_usuario === UserType.OG) {
-            canMarkAsPremium = true;
-        } else if (userMembershipInCommunity && userMembershipInCommunity.role === RoleInCommunity.MODERATOR && userMembershipInCommunity.canPublishPremiumContent === true) {
-            canMarkAsPremium = true;
-        }
-
-        if (!canMarkAsPremium) {
-            if (tempFilePath && fs.existsSync(tempFilePath)) fs.unlinkSync(tempFilePath);
+        if (intendsToPostPremium && !canMarkAsPremium) {
+            if (tempFilePath) fs.unlinkSync(tempFilePath);
             return res.status(403).json({ error: 'No tienes permiso para marcar este post como premium.' });
         }
-    }
-
-        // 4. Subir imagen a Cloudinary si existe
+        
         if (tempFilePath) {
             try {
-                console.log(`BACKEND (Crear Post): Subiendo ${tempFilePath} a Cloudinary...`);
-                cloudinaryResponse = await uploadToCloudinary(tempFilePath, "bulk_posts"); // Carpeta "bulk_posts" en Cloudinary
-                console.log(`BACKEND (Crear Post): Imagen subida a Cloudinary: ${cloudinaryResponse.url}`);
+                cloudinaryResponse = await uploadToCloudinary(tempFilePath, "bulk_posts");
             } catch (uploadError) {
-                console.error("BACKEND (Crear Post): Error subiendo imagen a Cloudinary:", uploadError);
-                // No es necesario borrar tempFilePath aquí, el finally general se encargará
                 return res.status(500).json({ error: 'Error al subir la imagen del post.', detalle: uploadError.message });
             } finally {
-                // Siempre eliminar el archivo temporal después del intento de subida a Cloudinary
-                if (fs.existsSync(tempFilePath)) { 
+                if (fs.existsSync(tempFilePath)) {
                     fs.unlinkSync(tempFilePath);
-                    console.log(`BACKEND (Crear Post): Archivo temporal ${tempFilePath} eliminado.`);
                 }
             }
         }
 
-        // 5. Crear el post en la base de datos
         const dataToCreate = {
             title: title.trim(), 
             content: content.trim(),
             author: { connect: { id: authorId } },
             community: { connect: { id: communityId } },
-            // Asignar esPremium solo si se solicitó Y se tiene permiso
-            esPremium: (esPremium === true && canMarkAsPremium) ? true : false 
+            esPremium: finalIsPremium // Se usa el valor booleano final y correcto
         };
 
         if (cloudinaryResponse) {
@@ -183,136 +136,22 @@ router.post(
 
         const nuevoPost = await prisma.post.create({
             data: dataToCreate,
-            select: { // Asegúrate que este select devuelva lo que el frontend espera
-                id: true, title: true, content: true, esPremium: true, createdAt: true, updatedAt: true,
-                imageUrl: true,
-                author: { select: { id: true, email: true, tipo_usuario: true, avatarUrl: true } },
-                community: { select: { id: true, name: true, logoUrl: true } },
-                 _count: { select: { comments: true, reactions: true } } 
-            }
+            select: { id: true, title: true, esPremium: true }
         });
-        console.log(`BACKEND (Crear Post): Post ${nuevoPost.id} creado. esPremium: ${nuevoPost.esPremium}. Autor ID: ${authorId}. Comunidad ID: ${communityId}`);
+        
         res.status(201).json(nuevoPost);
 
     } catch (error) {
-        console.error(`❌ BACKEND (Crear Post): Error general en POST /comunidades/${communityId}/posts:`, error);
-        // Si hubo un error DESPUÉS de subir a Cloudinary pero ANTES de guardar en DB, intentar rollback de Cloudinary
-        if (cloudinaryResponse && error) { // 'error' implica que la operación de DB falló
-            console.warn(`BACKEND (Crear Post): Imagen ${cloudinaryResponse.public_id} subida a Cloudinary pero ocurrió error posterior en DB. Intentando eliminar de Cloudinary...`);
-            try {
-                await deleteFromCloudinary(cloudinaryResponse.public_id);
-                console.log(`BACKEND (Crear Post): Imagen ${cloudinaryResponse.public_id} eliminada de Cloudinary (rollback).`);
-            } catch (rollbackError) {
-                console.error(`BACKEND (Crear Post): Fallo al eliminar imagen ${cloudinaryResponse.public_id} de Cloudinary durante el rollback:`, rollbackError);
-            }
-        }
-        // Asegurarse de que el archivo temporal se elimine si no se manejó en el finally de Cloudinary (ej. error antes)
-        // El `finally` dentro del try de Cloudinary ya debería haberlo manejado si se llegó a ese bloque.
-        // Este es un safeguard adicional si el error ocurrió antes de intentar la subida a Cloudinary.
-        else if (tempFilePath && fs.existsSync(tempFilePath)) {
-             fs.unlinkSync(tempFilePath);
-             console.log(`BACKEND (Crear Post): Archivo temporal ${tempFilePath} eliminado en catch general (probablemente error pre-Cloudinary).`);
-        }
-
-        if (error.code === 'P2025') { // Error de Prisma por referencia no encontrada
-             return res.status(404).json({ error: 'Autor o Comunidad no encontrados al intentar crear el post (referencia inválida).', detalle: error.message });
+        console.error(`Error en POST /comunidades/${communityId}/posts:`, error);
+        if (cloudinaryResponse) {
+            await deleteFromCloudinary(cloudinaryResponse.public_id).catch(e => console.error("Fallo en rollback de Cloudinary", e));
         }
         res.status(500).json({ error: 'Error interno al crear la publicación.', detalle: error.message });
     }
   }
 );
 
-
-// --- Endpoint para Listar Publicaciones de una Comunidad (VERSIÓN CORREGIDA Y DEFINITIVA) ---
-router.get(
-    '/comunidades/:communityId/posts',
-    authenticateToken,
-    [
-      param('communityId').isMongoId().withMessage('El ID de la comunidad no es válido.')
-    ],
-    async (req, res) => {
-      console.log("\n--- [DEBUG] INICIO: Petición a GET /comunidades/:communityId/posts ---");
-      const errors = validationResult(req);
-      if (!errors.isEmpty()) {
-          console.log("--- [DEBUG] ERROR: Validación de parámetros falló.");
-          return res.status(400).json({ errors: errors.array() });
-      }
-      
-      const communityId = req.params.communityId;
-      const userId = req.userId;
-      const page = parseInt(req.query.page) || 1;
-      const limit = parseInt(req.query.limit) || 10;
-      const skip = (page - 1) * limit;
-      
-      console.log(`--- [DEBUG] Parámetros: communityId=${communityId}, userId=${userId}, page=${page}`);
-
-      try {
-          const whereCondition = { communityId: communityId };
-          console.log("--- [DEBUG] 1. 'whereCondition' construida:", whereCondition);
-
-          const selectClause = {
-              id: true,
-              title: true,
-              content: true,
-              esPremium: true,
-              createdAt: true,
-              imageUrl: true,
-              community: { select: { id: true, name: true } },
-              _count: { select: { comments: true, reactions: true } },
-              author: { 
-                  select: { 
-                      id: true, 
-                      name: true,
-                      username: true,
-                      avatarUrl: true
-                  } 
-              },
-              reactions: {
-                  where: { userId: userId },
-                  select: { id: true }
-              }
-          };
-          console.log("--- [DEBUG] 2. 'selectClause' construida. A punto de ejecutar prisma.post.findMany...");
-
-          const postsFromDb = await prisma.post.findMany({
-              where: whereCondition,
-              orderBy: { createdAt: 'desc' },
-              skip: skip, 
-              take: limit,
-              select: selectClause
-          });
-
-          console.log(`--- [DEBUG] 3. Éxito en prisma.post.findMany. Se encontraron ${postsFromDb.length} posts.`);
-
-          const posts = postsFromDb.map(post => {
-              const { reactions, ...restOfPost } = post;
-              return {
-                  ...restOfPost,
-                  userHasLiked: reactions.length > 0
-              };
-          });
-
-          console.log("--- [DEBUG] 4. Posts mapeados para añadir 'userHasLiked'. A punto de ejecutar prisma.post.count...");
-
-          const totalPosts = await prisma.post.count({ where: whereCondition });
-
-          console.log(`--- [DEBUG] 5. Éxito en prisma.post.count. Total de posts: ${totalPosts}. A punto de enviar respuesta.`);
-          
-          const totalPages = Math.ceil(totalPosts / limit);
-          
-          res.status(200).json({ posts, currentPage: page, totalPages, totalPosts });
-          console.log("--- [DEBUG] FIN: Respuesta enviada exitosamente. ---");
-
-      } catch (error) {
-          // Si el código llega aquí, este log nos dará el error exacto de Prisma.
-          console.error("--- [DEBUG] ERROR FATAL ATRAPADO EN EL BLOQUE CATCH ---");
-          console.error(error); // Imprimimos el objeto de error COMPLETO
-          res.status(500).json({ error: 'Error interno al obtener la lista de publicaciones.', detalle: error.message });
-      }
-    });
-
-
-// --- Endpoint para Ver los Detalles de una Publicación Específica ---
+// --- NUEVO ENDPOINT: Ver los Detalles de una Publicación Específica ---
 router.get(
   '/posts/:postId',
   authenticateToken,
@@ -324,9 +163,9 @@ router.get(
     if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
     const postId = req.params.postId;
-    const userId = req.userId; 
+    const userId = req.userId;
 
-     try {
+    try {
       const post = await prisma.post.findUnique({
         where: { id: postId },
         select: {
@@ -336,25 +175,24 @@ router.get(
           esPremium: true,
           createdAt: true,
           updatedAt: true,
-          communityId: true, 
-          authorId: true,    // Selecciona el scalar authorId
+          communityId: true,
+          authorId: true,
           imageUrl: true,
-          imagePublicId: true, // Mantén si lo usas o planeas usar
-          author: { 
-              select: { 
-                  id: true, 
-                  email: true, 
-                  tipo_usuario: true, 
-                  avatarUrl: true // Añadido para el frontend
-              } 
+          author: {
+              select: {
+                  id: true,
+                  name: true,
+                  username: true,
+                  avatarUrl: true
+              }
           },
-          community: { 
-              select: { 
-                  id: true, 
-                  name: true, 
-                  logoUrl: true,     // Añadido para el frontend
-                  createdById: true  // Añadido para permisos de eliminar comentario en frontend
-              } 
+          community: {
+              select: {
+                  id: true,
+                  name: true,
+                  logoUrl: true,
+                  createdById: true
+              }
           },
         }
       });
@@ -362,72 +200,46 @@ router.get(
       if (!post) {
         return res.status(404).json({ error: 'Publicación no encontrada.' });
       }
-
-      let userHasLikedThisPost = false;
-      if (userId) { 
-        // --- CAMBIO IMPORTANTE: Usar findFirst en lugar de findUnique ---
-        const reaction = await prisma.reaction.findFirst({ 
-          where: {
-            userId: userId,
-            postId: postId,
-            type: ReactionType.LIKE // Asegúrate que ReactionType.LIKE sea el string correcto (ej. "LIKE")
-          },
-          select: { id: true } // Solo necesitamos saber si existe
-        });
-        // --- FIN DE CAMBIO IMPORTANTE ---
-        if (reaction) {
-          userHasLikedThisPost = true;
-        }
-      }
-      console.log(`BACKEND (GET /posts/:postId): Usuario ${userId} ${userHasLikedThisPost ? 'SÍ' : 'NO'} ha dado like al post ${postId}.`);
-
-      // Lógica de acceso a post premium (sin cambios)
-      if (post.esPremium) {
-        if (!userId) {
-          return res.status(401).json({ error: 'Se requiere autenticación para ver este post premium.' });
-        }
-        if (post.authorId !== userId) {
+      
+      // Lógica para verificar si el post es premium y si el usuario tiene acceso
+      if (post.esPremium && post.authorId !== userId) {
           const userRequesting = await prisma.user.findUnique({
             where: { id: userId },
             select: { suscritoAComunidadesIds: true }
           });
           const isSubscribed = userRequesting?.suscritoAComunidadesIds?.includes(post.communityId) ?? false;
           if (!isSubscribed) {
-            return res.status(403).json({ error: 'Acceso denegado. Se requiere suscripción a la comunidad para ver este post premium.' });
+            return res.status(403).json({ error: 'Acceso denegado. Se requiere suscripción para ver este post.' });
           }
-        }
       }
 
-      // Conteos (sin cambios)
-      const likesCount = await prisma.reaction.count({
-        where: { postId: postId, type: ReactionType.LIKE }
+      // Lógica para saber si el usuario actual le ha dado "like"
+      const reaction = await prisma.reaction.findFirst({ 
+        where: { userId: userId, postId: postId, type: 'LIKE' },
+        select: { id: true }
       });
-      const commentsCount = await prisma.comment.count({
-        where: { postId: postId }
-      });
+
+      // Lógica para contar likes y comentarios
+      const [likesCount, commentsCount] = await Promise.all([
+          prisma.reaction.count({ where: { postId: postId, type: 'LIKE' } }),
+          prisma.comment.count({ where: { postId: postId } })
+      ]);
 
       res.status(200).json({
         ...post,
         likesCount,
         commentsCount,
-        userHasLiked: userHasLikedThisPost
+        userHasLiked: !!reaction
       });
 
     } catch (error) {
-      console.error(`❌ (posts.routes.js) Error en GET /posts/${postId}:`, error);
-      if (error.code === 'P2023' && error.message?.includes("Malformed ObjectID")) {
-        return res.status(400).json({ error: 'El formato del ID de la publicación es inválido.' });
-      }
+      console.error(`Error en GET /posts/${postId}:`, error);
       res.status(500).json({ error: 'Error al obtener los detalles de la publicación.', detalle: error.message });
     }
   }
 );
 
-
 // --- Endpoint para Actualizar una Publicación (Post) ---
-// Ruta: PUT /posts/:postId
-// NOTA: La actualización de la imagen no está implementada en este endpoint por simplicidad para el MVP.
-// Si se quisiera, se tendría que añadir multer y lógica para borrar la imagen antigua de Cloudinary y subir la nueva.
 router.put(
     '/posts/:postId',
     authenticateToken,
@@ -494,7 +306,6 @@ router.put(
   );  
 
 // --- Endpoint para Eliminar una Publicación (Post) ---
-// Ruta: DELETE /posts/:postId
 router.delete(
     '/posts/:postId',
     authenticateToken,

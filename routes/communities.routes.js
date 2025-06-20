@@ -157,7 +157,7 @@ router.post(
     }
 );
   
-// --- Endpoint para Ver los Detalles de una Comunidad Específica (ACTUALIZADO) ---
+// --- Endpoint para Ver los Detalles de una Comunidad Específica (MODIFICADO) ---
 router.get(
     '/:communityId',
     authenticateToken,
@@ -171,26 +171,42 @@ router.get(
         const userId = req.userId;
         
         try {
-            const comunidad = await prisma.community.findUnique({
-                where: { id: communityId },
-                select: {
-                    id: true, name: true, description: true, esPublica: true, createdAt: true,
-                    idiomaPrincipal: true, idiomaSecundario: true,
-                    createdById: true, logoUrl: true, bannerUrl: true,
-                    createdBy: { select: { id: true, name: true, username: true, avatarUrl: true } },
-                    _count: { select: { posts: true, memberships: true } },
-                }
-            });
+            // ===== INICIO DE LA MODIFICACIÓN =====
+            // Usamos Promise.all para ejecutar ambas consultas en paralelo
+            const [comunidad, subscriberCount] = await Promise.all([
+                // Consulta 1: Obtener los detalles de la comunidad
+                prisma.community.findUnique({
+                    where: { id: communityId },
+                    select: {
+                        id: true, name: true, description: true, esPublica: true, createdAt: true,
+                        idiomaPrincipal: true, idiomaSecundario: true,
+                        createdById: true, logoUrl: true, bannerUrl: true,
+                        createdBy: { select: { id: true, name: true, username: true, avatarUrl: true } },
+                        _count: { select: { posts: true, memberships: true } },
+                    }
+                }),
+                // Consulta 2: Contar cuántos usuarios están suscritos a esta comunidad
+                prisma.user.count({
+                    where: {
+                        suscritoAComunidadesIds: {
+                            has: communityId
+                        }
+                    }
+                })
+            ]);
+            // ===== FIN DE LA MODIFICACIÓN =====
             
             if (!comunidad) {
                 return res.status(404).json({ error: 'Comunidad no encontrada.' });
             }
  
-            let respuestaComunidad = { ...comunidad };
+            // Añadimos el nuevo dato al objeto de la comunidad
+            comunidad.premiumSubscribersCount = subscriberCount;
+
+            // El resto de tu lógica de permisos y membresía permanece igual
             let currentUserMembershipData = { isMember: false, isSubscribed: false };
 
             if (userId) {
-                // Hacemos una sola consulta para obtener la membresía y el estado de suscripción del usuario
                 const userContext = await prisma.user.findUnique({
                     where: { id: userId },
                     select: {
@@ -203,22 +219,22 @@ router.get(
                 });
 
                 if (userContext) {
-                    // Verificamos si es miembro
                     if (userContext.memberships && userContext.memberships.length > 0) {
                         currentUserMembershipData.isMember = true;
                         currentUserMembershipData.role = userContext.memberships[0].role;
                         currentUserMembershipData.canPublishPremiumContent = userContext.memberships[0].canPublishPremiumContent;
                     }
-                    // Verificamos si está suscrito
                     if (userContext.suscritoAComunidadesIds.includes(communityId)) {
                         currentUserMembershipData.isSubscribed = true;
                     }
                 }
             }
             
-            respuestaComunidad.currentUserMembership = currentUserMembershipData;
+            const respuestaComunidad = { 
+                ...comunidad, 
+                currentUserMembership: currentUserMembershipData 
+            };
             
-            // Lógica de permisos para comunidades privadas
             if (!comunidad.esPublica && !respuestaComunidad.currentUserMembership.isMember) {
                  return res.status(403).json({ error: 'Acceso denegado. Esta comunidad es privada.' });
             }

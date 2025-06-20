@@ -630,4 +630,73 @@ router.get(
     }
 );
 
+/**
+ * @route   GET /api/me/management-info
+ * @desc    Obtener listas de comunidades y suscripciones para el usuario autenticado
+ * @access  Privado
+ */
+router.get('/me/management-info', authenticateToken, async (req, res) => {
+    const userId = req.userId;
+
+    try {
+        const user = await prisma.user.findUnique({
+            where: { id: userId },
+            select: {
+                suscritoAComunidadesIds: true,
+                memberships: {
+                    select: {
+                        role: true, 
+                        community: {
+                            select: {
+                                id: true,
+                                name: true,
+                                logoUrl: true,
+                                _count: { select: { memberships: true } }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        if (!user) {
+            return res.status(404).json({ error: 'Usuario no encontrado.' });
+        }
+
+        // ===== INICIO DE LA MODIFICACIÓN =====
+        // La lista de 'Membresías' ahora incluirá tanto a MIEMBROS como a MODERADORES.
+        const memberOfCommunities = user.memberships
+            .filter(m => m.role === 'MEMBER' || m.role === 'MODERATOR')
+            .map(m => m.community);
+
+        // La lista 'Moderando' se mantiene solo con el rol de MODERADOR.
+        const moderatorOfCommunities = user.memberships
+            .filter(m => m.role === 'MODERATOR')
+            .map(m => m.community);
+        // ===== FIN DE LA MODIFICACIÓN =====
+
+        const subscribedCommunities = await prisma.community.findMany({
+            where: {
+                id: { in: user.suscritoAComunidadesIds || [] }
+            },
+            select: {
+                id: true,
+                name: true,
+                logoUrl: true,
+                _count: { select: { memberships: true } }
+            }
+        });
+
+        res.status(200).json({
+            memberOfCommunities,
+            moderatorOfCommunities,
+            subscribedToCommunities: subscribedCommunities
+        });
+
+    } catch (error) {
+        console.error(`Error en GET /api/me/management-info:`, error);
+        res.status(500).json({ error: 'Error al obtener la información de gestión.', detalle: error.message });
+    }
+});
+
 module.exports = router;

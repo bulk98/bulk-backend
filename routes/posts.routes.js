@@ -10,20 +10,15 @@ const { param, body, validationResult } = require('express-validator');
 const multer = require('multer');
 const path = require('path');
 const fs = require('fs'); // File System
-const { UserType } = require('@prisma/client');
-const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinary'); // Ajusta si tu carpeta utils está en otro lugar
-const { ReactionType } = require('../constants/reactions'); // ✅ Sin ciclos
-const { RoleInCommunity } = require('@prisma/client');
+const { UserType, RoleInCommunity } = require('@prisma/client');
+const { uploadToCloudinary, deleteFromCloudinary } = require('../utils/cloudinary');
+const { ReactionType } = require('../constants/reactions');
 
-
-
-// Configuración de Multer para almacenamiento temporal en disco
-// Se crea una carpeta 'uploads_temp_bulk' en la raíz del proyecto si no existe
+// --- Configuración de Multer (sin cambios) ---
 const tempUploadDir = path.join(__dirname, '..', 'uploads_temp_bulk');
 if (!fs.existsSync(tempUploadDir)) {
     fs.mkdirSync(tempUploadDir, { recursive: true });
 }
-
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     cb(null, tempUploadDir);
@@ -33,25 +28,22 @@ const storage = multer.diskStorage({
     cb(null, Date.now() + '-' + safeOriginalName);
   }
 });
-
 const fileFilter = (req, file, cb) => {
   if (file.mimetype === 'image/jpeg' || file.mimetype === 'image/png' || file.mimetype === 'image/gif' || file.mimetype === 'image/webp') {
     cb(null, true);
   } else {
-    // Pasar el error a través de req para que el manejador de la ruta lo capture
     req.fileValidationError = 'Tipo de archivo no soportado. Solo imágenes (JPEG, PNG, GIF, WEBP) son permitidas.';
-    cb(null, false); // Rechazar el archivo, Multer no lo procesará
+    cb(null, false);
   }
 };
-
 const upload = multer({
   storage: storage,
-  limits: { fileSize: 1024 * 1024 * 10 }, // Límite de 10MB (ajustable)
+  limits: { fileSize: 1024 * 1024 * 10 },
   fileFilter: fileFilter
 });
 
 
-// --- Endpoint para Crear una Publicación (VERSIÓN FINAL Y CORRECTA) ---
+// --- Endpoint para Crear una Publicación (VERSIÓN CON LÓGICA CORREGIDA) ---
 router.post(
   '/comunidades/:communityId/posts',
   authenticateToken,
@@ -74,17 +66,33 @@ router.post(
 
     const { communityId } = req.params;
     const authorId = req.userId;
-    const { title, content, esPremium } = req.body; // esPremium llegará como string "true" o undefined
+    const { title, content, esPremium } = req.body;
+
+    // --- INICIO DE SECCIÓN DE DEBUG ---
+    console.log("\n--- DEBUG: INICIANDO CREACIÓN DE POST ---");
+    console.log(`Petición para Comunidad ID: ${communityId}`);
+    console.log(`Usuario (autor) ID: ${authorId}`);
+    console.log(`Valor de 'esPremium' recibido en req.body:`, esPremium, `(Tipo: ${typeof esPremium})`);
+    // --- FIN DE SECCIÓN DE DEBUG ---
 
     let tempFilePath = req.file ? req.file.path : null;
     let cloudinaryResponse = null;
 
     try {
-        const [comunidad, autorDetails, userMembership] = await Promise.all([
+        const [comunidad, userMembership] = await Promise.all([
             prisma.community.findUnique({ where: { id: communityId }, select: { createdById: true } }),
-            prisma.user.findUnique({ where: { id: authorId }, select: { tipo_usuario: true } }),
             prisma.communityMembership.findUnique({ where: { userId_communityId: { userId: authorId, communityId: communityId } }, select: { role: true, canPublishPremiumContent: true } })
         ]);
+
+        // --- INICIO DE SECCIÓN DE DEBUG ---
+        console.log("--- DEBUG: DATOS DE LA BASE DE DATOS ---");
+        if (!comunidad) {
+            console.log("Resultado de 'comunidad': null o undefined. ¡COMUNIDAD NO ENCONTRADA!");
+        } else {
+            console.log(`Resultado de 'comunidad':`, { createdById: comunidad.createdById });
+        }
+        console.log(`Resultado de 'userMembership':`, userMembership);
+        // --- FIN DE SECCIÓN DE DEBUG ---
 
         if (!comunidad) {
             if (tempFilePath) fs.unlinkSync(tempFilePath);
@@ -98,15 +106,26 @@ router.post(
             if (tempFilePath) fs.unlinkSync(tempFilePath);
             return res.status(403).json({ error: 'No tienes permiso para crear publicaciones en esta comunidad.' });
         }
-
-        // Lógica de permisos correcta y limpia
-        const canMarkAsPremium = (autorDetails?.tipo_usuario === UserType.OG) || (isModerator && userMembership?.canPublishPremiumContent === true);
+        
+        const canMarkAsPremium = isCreator || (isModerator && userMembership?.canPublishPremiumContent === true);
         const intendsToPostPremium = esPremium === 'true';
         const finalIsPremium = canMarkAsPremium && intendsToPostPremium;
 
+        // --- INICIO DE SECCIÓN DE DEBUG ---
+        console.log("--- DEBUG: EVALUACIÓN DE PERMISOS ---");
+        console.log(`Valor de 'isCreator': ${isCreator}`);
+        console.log(`Valor de 'isModerator': ${isModerator}`);
+        console.log(`Valor de 'intendsToPostPremium' (intención del usuario): ${intendsToPostPremium}`);
+        console.log(`Valor de 'canMarkAsPremium' (permiso del usuario): ${canMarkAsPremium}`);
+        console.log(`===> VALOR FINAL PARA 'esPremium' EN DB: ${finalIsPremium} <===`);
+        // --- FIN DE SECCIÓN DE DEBUG ---
+
         if (intendsToPostPremium && !canMarkAsPremium) {
             if (tempFilePath) fs.unlinkSync(tempFilePath);
-            return res.status(403).json({ error: 'No tienes permiso para marcar este post como premium.' });
+            const errorMessage = isCreator 
+                ? 'Error inesperado de permisos para el creador.'
+                : 'No tienes permiso para marcar este post como premium.';
+            return res.status(403).json({ error: errorMessage });
         }
         
         if (tempFilePath) {
@@ -126,7 +145,7 @@ router.post(
             content: content.trim(),
             author: { connect: { id: authorId } },
             community: { connect: { id: communityId } },
-            esPremium: finalIsPremium // Se usa el valor booleano final y correcto
+            esPremium: finalIsPremium
         };
 
         if (cloudinaryResponse) {
@@ -139,6 +158,7 @@ router.post(
             select: { id: true, title: true, esPremium: true }
         });
         
+        console.log("--- DEBUG: POST CREADO EN DB ---", nuevoPost, "\n");
         res.status(201).json(nuevoPost);
 
     } catch (error) {
@@ -151,7 +171,107 @@ router.post(
   }
 );
 
-// --- NUEVO ENDPOINT: Ver los Detalles de una Publicación Específica ---
+
+// --- Endpoint para Listar los Posts de una Comunidad (CON DEPURACIÓN) ---
+router.get(
+  '/comunidades/:communityId/posts',
+  authenticateToken,
+  [
+    param('communityId').isMongoId().withMessage('ID de comunidad inválido.'),
+  ],
+  async (req, res) => {
+    console.log("--- EJECUTANDO RUTA LISTAR POSTS (VERSIÓN DE SEGURIDAD REFORZADA) ---");
+    
+    const { communityId } = req.params;
+    const userId = req.userId;
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+    const skip = (page - 1) * limit;
+
+    try {
+      const [community, user, postsFromDb, totalPosts] = await Promise.all([
+        prisma.community.findUnique({
+          where: { id: communityId },
+          select: { esPublica: true, createdById: true }
+        }),
+        prisma.user.findUnique({
+          where: { id: userId },
+          select: {
+            suscritoAComunidadesIds: true,
+            memberships: {
+              where: { communityId: communityId },
+              select: { role: true }
+            }
+          }
+        }),
+        prisma.post.findMany({
+          where: { communityId: communityId },
+          orderBy: { createdAt: 'desc' },
+          skip, take: limit,
+          select: {
+            id: true, title: true, content: true, esPremium: true, createdAt: true, imageUrl: true, authorId: true,
+            author: { select: { id: true, name: true, username: true, avatarUrl: true } },
+            community: { select: { id: true, name: true, logoUrl: true } },
+            _count: { select: { comments: true } },
+            reactions: { where: { userId: userId, type: 'LIKE' } }
+          }
+        }),
+        prisma.post.count({ where: { communityId: communityId } })
+      ]);
+
+      if (!community) return res.status(404).json({ error: 'Comunidad no encontrada.' });
+
+      const membership = user?.memberships?.[0];
+      const isCreator = community.createdById === userId;
+      const isModerator = membership?.role === 'MODERATOR';
+      const isSubscribed = user?.suscritoAComunidadesIds?.includes(communityId) ?? false;
+      const isMember = !!membership;
+      
+      // ===== INICIO DE LOGS DE DEPURACIÓN =====
+      console.log(`[PERM CHECK] ID de Usuario Actual: ${userId}`);
+      console.log(`[PERM CHECK] ID del Creador de la Comunidad: ${community.createdById}`);
+      console.log(`[PERM CHECK] ¿Es el creador? -> ${isCreator}`);
+      console.log(`[PERM CHECK] Rol en la comunidad -> ${membership?.role || 'No es miembro'}`);
+      console.log(`[PERM CHECK] ¿Es moderador? -> ${isModerator}`);
+      console.log(`[PERM CHECK] ¿Está suscrito? -> ${isSubscribed}`);
+      // ===== FIN DE LOGS DE DEPURACIÓN =====
+
+      if (!community.esPublica && !isMember) {
+        return res.status(403).json({ error: 'Acceso denegado. Esta comunidad es privada.' });
+      }
+
+      const processedPosts = postsFromDb.map(post => {
+        const userHasPremiumAccess = isCreator || isModerator || isSubscribed;
+        
+        if (post.esPremium && !userHasPremiumAccess) {
+          return { ...post, content: "Este es contenido premium. Suscríbete para desbloquearlo." };
+        }
+        return post;
+      });
+
+      const postsWithLikesCount = await Promise.all(processedPosts.map(async (post) => {
+        const { reactions, ...restOfPost } = post;
+        const totalLikes = await prisma.reaction.count({ where: { postId: post.id, type: 'LIKE' } });
+        return { ...restOfPost, userHasLiked: reactions.length > 0, likesCount: totalLikes };
+      }));
+
+      res.status(200).json({
+        posts: postsWithLikesCount,
+        currentPage: page,
+        totalPages: Math.ceil(totalPosts / limit),
+        totalPosts: totalPosts
+      });
+
+    } catch (error) {
+      console.error(`Error en GET /comunidades/${communityId}/posts:`, error);
+      res.status(500).json({ error: 'Error interno al obtener los posts.', detalle: error.message });
+    }
+  }
+);
+
+
+
+// --- Endpoint para Ver los Detalles de un Post (REFORZADO) ---
 router.get(
   '/posts/:postId',
   authenticateToken,
@@ -169,31 +289,9 @@ router.get(
       const post = await prisma.post.findUnique({
         where: { id: postId },
         select: {
-          id: true,
-          title: true,
-          content: true,
-          esPremium: true,
-          createdAt: true,
-          updatedAt: true,
-          communityId: true,
-          authorId: true,
-          imageUrl: true,
-          author: {
-              select: {
-                  id: true,
-                  name: true,
-                  username: true,
-                  avatarUrl: true
-              }
-          },
-          community: {
-              select: {
-                  id: true,
-                  name: true,
-                  logoUrl: true,
-                  createdById: true
-              }
-          },
+          id: true, title: true, content: true, esPremium: true, createdAt: true, updatedAt: true, communityId: true, authorId: true, imageUrl: true,
+          author: { select: { id: true, name: true, username: true, avatarUrl: true } },
+          community: { select: { id: true, name: true, logoUrl: true, createdById: true } }
         }
       });
 
@@ -201,36 +299,32 @@ router.get(
         return res.status(404).json({ error: 'Publicación no encontrada.' });
       }
       
-      // Lógica para verificar si el post es premium y si el usuario tiene acceso
-      if (post.esPremium && post.authorId !== userId) {
-          const userRequesting = await prisma.user.findUnique({
-            where: { id: userId },
-            select: { suscritoAComunidadesIds: true }
-          });
-          const isSubscribed = userRequesting?.suscritoAComunidadesIds?.includes(post.communityId) ?? false;
-          if (!isSubscribed) {
-            return res.status(403).json({ error: 'Acceso denegado. Se requiere suscripción para ver este post.' });
+      const isAuthor = post.authorId === userId;
+      const isCommunityCreator = post.community.createdById === userId;
+
+      if (post.esPremium && !isAuthor && !isCommunityCreator) {
+          const membership = await prisma.communityMembership.findFirst({ where: { userId, communityId: post.communityId } });
+          const isModerator = membership?.role === 'MODERATOR';
+
+          if (!isModerator) {
+            const userRequesting = await prisma.user.findUnique({
+              where: { id: userId },
+              select: { suscritoAComunidadesIds: true }
+            });
+            const isSubscribed = userRequesting?.suscritoAComunidadesIds?.includes(post.communityId) ?? false;
+            
+            if (!isSubscribed) {
+              return res.status(403).json({ error: 'Acceso denegado. Se requiere suscripción para ver este post.' });
+            }
           }
       }
 
-      // Lógica para saber si el usuario actual le ha dado "like"
-      const reaction = await prisma.reaction.findFirst({ 
-        where: { userId: userId, postId: postId, type: 'LIKE' },
-        select: { id: true }
-      });
-
-      // Lógica para contar likes y comentarios
+      const reaction = await prisma.reaction.findFirst({ where: { userId, postId, type: 'LIKE' }});
       const [likesCount, commentsCount] = await Promise.all([
-          prisma.reaction.count({ where: { postId: postId, type: 'LIKE' } }),
-          prisma.comment.count({ where: { postId: postId } })
+          prisma.reaction.count({ where: { postId, type: 'LIKE' } }),
+          prisma.comment.count({ where: { postId } })
       ]);
-
-      res.status(200).json({
-        ...post,
-        likesCount,
-        commentsCount,
-        userHasLiked: !!reaction
-      });
+      res.status(200).json({ ...post, likesCount, commentsCount, userHasLiked: !!reaction });
 
     } catch (error) {
       console.error(`Error en GET /posts/${postId}:`, error);
@@ -239,7 +333,7 @@ router.get(
   }
 );
 
-// --- Endpoint para Actualizar una Publicación (Post) ---
+
 router.put(
     '/posts/:postId',
     authenticateToken,
@@ -247,7 +341,6 @@ router.put(
       param('postId').isMongoId().withMessage("El ID del post no es válido."),
       body('title').optional().trim().notEmpty().withMessage('El título no puede ser vacío si se provee.'),
       body('content').optional().trim().notEmpty().withMessage('El contenido no puede ser vacío si se provee.'),
-      // No permitimos cambiar 'esPremium' ni 'communityId' ni 'imageUrl' aquí por ahora.
     ],
     async (req, res) => {
         const errors = validationResult(req);
@@ -265,7 +358,7 @@ router.put(
         try {
             const postExistente = await prisma.post.findUnique({
                 where: { id: postId },
-                select: { authorId: true } // Solo el autor puede editar
+                select: { authorId: true }
             });
   
             if (!postExistente) {
@@ -285,7 +378,7 @@ router.put(
                 data: dataToUpdate,
                 select: { 
                      id: true, title: true, content: true, esPremium: true, createdAt: true, updatedAt: true,
-                     imageUrl: true, imagePublicId: true, // Devolver info de imagen
+                     imageUrl: true, imagePublicId: true,
                      author: { select: { id: true, email: true } },
                      community: { select: { id: true, name: true } },
                 }
@@ -303,9 +396,10 @@ router.put(
             }
         }
     }
-  );  
+  ); 
 
-// --- Endpoint para Eliminar una Publicación (Post) ---
+
+
 router.delete(
     '/posts/:postId',
     authenticateToken,
@@ -327,7 +421,7 @@ router.delete(
                 select: {
                     authorId: true,
                     communityId: true, 
-                    imagePublicId: true // Para eliminar de Cloudinary
+                    imagePublicId: true
                 }
             });
   
@@ -335,7 +429,6 @@ router.delete(
                 return res.status(404).json({ error: 'Publicación no encontrada.' });
             }
   
-            // Lógica de permisos: Autor, Creador de comunidad, o Moderador de comunidad
             let puedeBorrar = false;
             if (postToDelete.authorId === userId) {
                 puedeBorrar = true;
@@ -358,7 +451,6 @@ router.delete(
                 return res.status(403).json({ error: 'No tienes permiso para eliminar esta publicación.' });
             }
 
-            // Eliminar imagen de Cloudinary si existe
             if (postToDelete.imagePublicId) {
                 try {
                     console.log(`>>> Intentando eliminar imagen de Cloudinary: ${postToDelete.imagePublicId}`);
@@ -366,17 +458,14 @@ router.delete(
                     console.log(`✅ Imagen ${postToDelete.imagePublicId} eliminada de Cloudinary.`);
                 } catch (cloudinaryError) {
                     console.error(`⚠️ Error eliminando imagen ${postToDelete.imagePublicId} de Cloudinary:`, cloudinaryError.message);
-                    // Continuamos con la eliminación del post de la DB de todas formas
                 }
             }
             
-            // Eliminar comentarios asociados al post
             await prisma.comment.deleteMany({
                 where: { postId: postId }
             });
             console.log(`>>> (posts.routes.js) Comentarios asociados al Post ID ${postId} eliminados.`);
   
-            // Eliminar el post de la base de datos
             await prisma.post.delete({
                 where: { id: postId }
             });
@@ -395,4 +484,6 @@ router.delete(
     }
   );
   
+
+
 module.exports = router;

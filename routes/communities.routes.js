@@ -1257,5 +1257,71 @@ router.delete(
   }
 );
 
+// Ruta para suscribirse al contenido premium
+router.post(
+    '/:communityId/suscripcion', // La ruta ahora es relativa a /api/communities
+    authenticateToken,
+    [ param('communityId').isMongoId().withMessage('ID de comunidad inválido.') ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+        const { communityId } = req.params;
+        const userId = req.userId;
+  
+        try {
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { suscritoAComunidadesIds: true }
+            });
+            if (user.suscritoAComunidadesIds.includes(communityId)) {
+                return res.status(200).json({ mensaje: 'Ya estás suscrito.' });
+            }
+  
+            await prisma.user.update({
+                where: { id: userId },
+                data: { suscritoAComunidadesIds: { push: communityId } }
+            });
+            res.status(200).json({ mensaje: 'Suscripción al contenido premium realizada con éxito.' });
+        } catch (error) {
+            res.status(500).json({ error: 'Error interno al procesar la suscripción.', detalle: error.message });
+        }
+    }
+);
+
+// Ruta para cancelar la suscripción al contenido premium
+router.delete(
+    '/:communityId/suscripcion', // La ruta ahora es relativa a /api/communities
+    authenticateToken,
+    [ param('communityId').isMongoId().withMessage('ID de comunidad inválido.') ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+        
+        const { communityId } = req.params;
+        const userId = req.userId;
+  
+        try {
+            const user = await prisma.user.findUnique({
+                where: { id: userId },
+                select: { suscritoAComunidadesIds: true }
+            });
+  
+            if (!user || !user.suscritoAComunidadesIds.includes(communityId)) {
+                 return res.status(200).json({ mensaje: 'No estabas suscrito a este contenido premium.'});
+            }
+  
+            const nuevasSuscripciones = user.suscritoAComunidadesIds.filter(id => id !== communityId);
+  
+            await prisma.user.update({
+                where: { id: userId },
+                data: { suscritoAComunidadesIds: { set: nuevasSuscripciones } } 
+            });
+            res.status(200).json({ mensaje: 'Suscripción cancelada con éxito.' });
+        } catch (error) { 
+            res.status(500).json({ error: 'Error al cancelar la suscripción.', detalle: error.message });
+        }
+    }
+);
 
 module.exports = router;

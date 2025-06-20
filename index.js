@@ -1,44 +1,42 @@
-
-// index.js
+// RUTA: index.js
 require('dotenv').config();
 
-// --- Imports Principales ---
 const express = require('express');
 const cors = require('cors');
-const multer = require('multer'); // Necesario para el middleware de error de Multer
-const prisma = require('./prismaClient'); 
+const multer = require('multer');
+const prisma = require('./prismaClient');
 
 // --- Imports de Routers ---
 const authRoutes = require('./routes/auth.routes');
 const communityRoutes = require('./routes/communities.routes');
 const postRoutes = require('./routes/posts.routes');
 const commentRoutes = require('./routes/comments.routes');
-const subscriptionRoutes = require('./routes/subscriptions.routes.js');
+// Se elimina la siguiente línea porque el archivo ya no existe
+// const subscriptionRoutes = require('./routes/subscriptions.routes.js'); 
 const userRoutes = require('./routes/users.routes.js');
 const reactionRoutes = require('./routes/reactions.routes');
 const searchRoutes = require('./routes/search.routes.js');
 
-// --- Configuración de Express ---
 const app = express();
 const puerto = process.env.PORT || 3000;
 
-// Middlewares globales
-app.use(express.json()); // <-- REEMPLAZO
-app.use(express.urlencoded({ extended: true })); // <-- REEMPLAZO
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(cors());
 
 // --- Montar Routers ---
 app.use('/api/auth', authRoutes);
-app.use('/api/communities', communityRoutes);
-app.use('/api', postRoutes); // ANTES: app.use(postRoutes); 
-app.use('/api', commentRoutes); // ANTES: app.use(commentRoutes);
-app.use('/api', subscriptionRoutes);
+app.use('/api/communities', communityRoutes); // Ahora maneja también las suscripciones
+app.use('/api', postRoutes);
+app.use('/api', commentRoutes);
+// Se elimina la siguiente línea
+// app.use('/api', subscriptionRoutes); 
 app.use('/api', userRoutes); 
 app.use('/api', reactionRoutes);
 app.use('/api/search', searchRoutes);
 
 
-// Middleware para manejar errores de Multer y de fileFilter personalizado
+// --- Middleware de Errores (sin cambios) ---
 app.use((err, req, res, next) => {
   if (req.fileValidationError) { 
     return res.status(400).json({ errors: [{ msg: req.fileValidationError, path: 'postImage', location: 'file' }] });
@@ -66,12 +64,13 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// --- Rutas Base ---
+// --- Ruta Base (sin cambios) ---
 app.get('/', (req, res) => {
     res.send('¡El servidor backend de Bulk está funcionando y usando Prisma!');
 });
 
-// --- Limpiar la conexión de Prisma al cerrar ---
+
+// --- Lógica de Cierre Limpio (sin cambios) ---
 let prismaDisconnected = false;
 const gracefulShutdown = async (signal) => {
   if (!prismaDisconnected) {
@@ -94,10 +93,8 @@ process.on('beforeExit', async () => {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-console.log("Modelos disponibles en Prisma:");
-console.log(Object.keys(prisma));
 
-// --- Iniciar el Servidor ---
+// --- Inicio del Servidor (sin cambios) ---
 app.listen(puerto, () => {
   console.log(`Servidor Express escuchando en http://localhost:${puerto}`);
 });

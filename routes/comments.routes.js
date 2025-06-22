@@ -66,6 +66,26 @@ router.post(
                   author: { select: { id: true, email: true, avatarUrl: true }} // Incluir avatarUrl
               }
           });
+          
+          // ===== INICIO DE LÓGICA DE NOTIFICACIÓN =====
+          // Notificar al autor del post que alguien ha comentado (si no es él mismo)
+          const postAuthor = await prisma.post.findUnique({
+              where: { id: postId },
+              select: { authorId: true }
+          });
+
+          if (postAuthor && postAuthor.authorId !== authorId) {
+              await prisma.notification.create({
+                  data: {
+                      recipientId: postAuthor.authorId,
+                      actorId: authorId,
+                      type: 'NEW_COMMENT',
+                      postId: postId
+                  }
+              });
+          }
+          // ===== FIN DE LÓGICA DE NOTIFICACIÓN =====
+
           res.status(201).json(nuevoComentario);
       } catch (error) {
           console.error(`❌ BACKEND (Crear Comentario): Error en POST /posts/${postId}/comments:`, error);

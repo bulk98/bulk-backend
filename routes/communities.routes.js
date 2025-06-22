@@ -96,18 +96,36 @@ router.get('/', async (req, res) => {
     }
 });
 
-// --- Endpoint para Crear Comunidades (ACTUALIZADO CON IDIOMAS) ---
+// --// --- Endpoint para Crear Comunidades (MODIFICADO CON LA SOLUCIÓN FINAL) ---
 router.post(
     '/',
     authenticateToken,
+
+(req, res, next) => {
+        console.log("\n\n===== DATOS RECIBIDOS EN EL BODY DEL BACKEND =====");
+        console.log(req.body);
+        console.log("Tipo de dato para 'esPublica':", typeof req.body.esPublica);
+        console.log("==============================================\n\n");
+        next(); // Llama a 'next()' para continuar con las validaciones
+    },
+    // ===========================================
+
+
     [
       body('name').trim().notEmpty().withMessage('El nombre es obligatorio.'),
-      body('esPublica').isBoolean(),
-      body('categoria').trim().notEmpty(),
-      // === INICIO DE LA MODIFICACIÓN ===
+      
+      // ===== INICIO DE LA SOLUCIÓN DEFINITIVA =====
+      // Primero validamos que el valor sea uno de los textos permitidos ('true' o 'false'),
+      // y LUEGO lo convertimos a un booleano real. Este es el orden correcto.
+      body('esPublica')
+        .isIn(['true', 'false'])
+        .withMessage('El valor de visibilidad es incorrecto.')
+        .toBoolean(),
+      // ===== FIN DE LA SOLUCIÓN DEFINITIVA =====
+
+      body('categoria').trim().notEmpty().withMessage('La categoría es obligatoria.'),
       body('idiomaPrincipal').trim().notEmpty().withMessage('El idioma principal es obligatorio.'),
       body('idiomaSecundario').optional({ checkFalsy: true }).trim()
-      // === FIN DE LA MODIFICACIÓN ===
     ],
     async (req, res) => {
         const errors = validationResult(req);
@@ -115,9 +133,7 @@ router.post(
             return res.status(400).json({ errors: errors.array() });
         }
         
-        // === INICIO DE LA MODIFICACIÓN ===
         const { name, description, esPublica, categoria, idiomaPrincipal, idiomaSecundario } = req.body;
-        // === FIN DE LA MODIFICACIÓN ===
         const creatorId = req.userId;
   
         try {
@@ -125,12 +141,10 @@ router.post(
                 data: {
                     name,
                     description,
-                    esPublica, 
+                    esPublica, // Garantizado que es un booleano
                     categoria,
-                    // === INICIO DE LA MODIFICACIÓN ===
                     idiomaPrincipal,
-                    idiomaSecundario, // Si es un string vacío, Prisma lo guardará como tal. El frontend envía null si es necesario.
-                    // === FIN DE LA MODIFICACIÓN ===
+                    idiomaSecundario: idiomaSecundario || null,
                     createdBy: { connect: { id: creatorId } },
                     memberships: {
                         create: {
@@ -153,6 +167,67 @@ router.post(
             } else {
                 res.status(500).json({ error: 'Error al crear la comunidad.', detalle: error.message });
             }
+        }
+    }
+);
+
+/**
+ * @route   GET /api/communities/:communityId/subscribers
+ * @desc    Obtener la lista de usuarios suscritos a una comunidad
+ * @access  Privado (Solo para el creador de la comunidad)
+ */
+router.get(
+    '/:communityId/subscribers',
+    authenticateToken,
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+        
+        const { communityId } = req.params;
+        const requestingUserId = req.userId;
+
+        try {
+            // 1. Verificar que la comunidad exista y que el solicitante sea el creador
+            const community = await prisma.community.findUnique({
+                where: { id: communityId },
+                select: { createdById: true }
+            });
+
+            if (!community) {
+                return res.status(404).json({ error: 'Comunidad no encontrada.' });
+            }
+
+            if (community.createdById !== requestingUserId) {
+                return res.status(403).json({ error: 'No tienes permiso para ver los suscriptores de esta comunidad.' });
+            }
+
+            // 2. Buscar todos los usuarios que tengan el ID de esta comunidad en su arreglo de suscripciones
+            const subscribers = await prisma.user.findMany({
+                where: {
+                    suscritoAComunidadesIds: {
+                        has: communityId
+                    }
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    username: true,
+                    email: true, // El email puede ser útil para el OG
+                    avatarUrl: true
+                    // No podemos seleccionar la fecha de suscripción porque no se almacena actualmente
+                }
+            });
+
+            res.status(200).json(subscribers);
+
+        } catch (error) {
+            console.error(`Error en GET /:communityId/subscribers:`, error);
+            res.status(500).json({ error: 'Error interno al obtener la lista de suscriptores.', detalle: error.message });
         }
     }
 );
@@ -474,6 +549,15 @@ router.post(
                     user: { select: { id: true, email: true } }
                 }
             });
+            // Notificar al creador de la comunidad sobre el nuevo miembro
+await prisma.notification.create({
+    data: {
+        recipientId: comunidad.createdById, // ID del creador
+        actorId: userId,                    // ID del que se unió
+        type: 'NEW_MEMBER',
+        communityId: communityId
+    }
+});
 
             console.log(`✅ Usuario ID ${userId} se unió a Comunidad ID ${communityId} como ${nuevaMembresia.role}.`);
             res.status(201).json({
@@ -792,6 +876,26 @@ router.patch(
               community: { select: { id: true, name: true } }
           }
         });
+
+        // ===== INICIO DE LA LÓGICA DE NOTIFICACIÓN =====
+      // Si el rol anterior era 'MEMBER' y el nuevo rol es 'MODERATOR',
+      // creamos una notificación para el usuario que fue promovido.
+      if (membershipToUpdate.role === 'MEMBER' && newRole === 'MODERATOR') {
+          await prisma.notification.create({
+              data: {
+                  // Quién recibe la notificación: el usuario que fue promovido.
+                  recipientId: memberUserId, 
+                  // Quién realizó la acción: el creador de la comunidad que está haciendo la petición.
+                  actorId: requestingUserId, 
+                  // El tipo de notificación que definimos en el schema.prisma
+                  type: 'PROMOTION_TO_MODERATOR', 
+                  // El ID de la comunidad para poder enlazar a ella.
+                  communityId: communityId 
+              }
+          });
+          console.log(`✅ Notificación de promoción a moderador creada para el usuario ${memberUserId}.`);
+      }
+      // ===== FIN DE LA LÓGICA DE NOTIFICACIÓN =====
   
         console.log(`✅ (communities.routes.js) Rol de Usuario ID ${memberUserId} en Comunidad ID ${communityId} cambiado a ${newRole} por Creador ID ${requestingUserId}.`);
         res.status(200).json({
@@ -1298,6 +1402,19 @@ router.post(
                 where: { id: userId },
                 data: { suscritoAComunidadesIds: { push: communityId } }
             });
+
+            // Notificar al creador de la comunidad sobre el nuevo suscriptor
+const community = await prisma.community.findUnique({ where: { id: communityId }, select: { createdById: true }});
+if (community) {
+    await prisma.notification.create({
+        data: {
+            recipientId: community.createdById,
+            actorId: userId,
+            type: 'NEW_SUBSCRIBER',
+            communityId: communityId
+        }
+    });
+}
             res.status(200).json({ mensaje: 'Suscripción al contenido premium realizada con éxito.' });
         } catch (error) {
             res.status(500).json({ error: 'Error interno al procesar la suscripción.', detalle: error.message });

@@ -16,13 +16,14 @@ const commentRoutes = require('./routes/comments.routes');
 const userRoutes = require('./routes/users.routes.js');
 const reactionRoutes = require('./routes/reactions.routes');
 const searchRoutes = require('./routes/search.routes.js');
+const notificationRoutes = require('./routes/notifications.routes');
 
 const app = express();
 const puerto = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors());
+app.use(cors('*'));
 
 // --- Montar Routers ---
 app.use('/api/auth', authRoutes);
@@ -34,6 +35,7 @@ app.use('/api', commentRoutes);
 app.use('/api', userRoutes); 
 app.use('/api', reactionRoutes);
 app.use('/api/search', searchRoutes);
+app.use('/api', notificationRoutes);
 
 
 // --- Middleware de Errores (sin cambios) ---

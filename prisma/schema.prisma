@@ -61,6 +61,8 @@ model User {
   posts                   Post[]                 @relation("PostAuthor")
   comments                Comment[]              @relation("CommentAuthor")
   reactions               Reaction[]
+  notificationsAsRecipient Notification[]        @relation("Recipient")
+  notificationsAsActor     Notification[]        @relation("Actor")
 }
 
 model CommunityMembership {
@@ -112,6 +114,7 @@ model Post {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   esPremium     Boolean   @default(false)
+  isPinned      Boolean   @default(false)
   imageUrl      String?
   imagePublicId String?
   author        User      @relation("PostAuthor", fields: [authorId], references: [id], onDelete: Cascade)
@@ -150,4 +153,36 @@ model Reaction {
   @@unique([userId, postId])
   @@index([postId])
   @@index([userId])
+}
+
+// NUEVO: Enum para los tipos de notificación
+enum NotificationType {
+  NEW_COMMENT             // Alguien comentó en tu post
+  POST_LIKE               // Alguien le dio like a tu post
+  NEW_SUBSCRIBER          // Un usuario se suscribió a tu comunidad
+  NEW_MEMBER              // Un usuario se unió a tu comunidad
+  PROMOTION_TO_MODERATOR  // Te han hecho moderador de una comunidad
+}
+
+// NUEVO: Modelo para guardar las notificaciones
+model Notification {
+  id           String           @id @default(auto()) @map("_id") @db.ObjectId
+  createdAt    DateTime         @default(now())
+  isRead       Boolean          @default(false)
+  
+  type         NotificationType // El tipo de notificación
+  
+  // Quién recibe la notificación
+  recipient    User             @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  recipientId  String           @db.ObjectId
+
+  // Quién generó la notificación (puede ser nulo si el usuario se elimina)
+  actor        User?            @relation("Actor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorId      String?          @db.ObjectId
+
+  // Enlaces opcionales a otras entidades para crear los links
+  postId       String?          @db.ObjectId
+  communityId  String?          @db.ObjectId
+
+  @@index([recipientId, createdAt])
 }

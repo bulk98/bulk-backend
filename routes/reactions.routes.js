@@ -84,6 +84,26 @@ router.post(
                     },
                     select: { id: true, type: true }
                 });
+
+                // ===== INICIO DE LÓGICA DE NOTIFICACIÓN =====
+                // Notificar al autor del post que a alguien le gustó (si no es él mismo)
+                 const postAuthor = await prisma.post.findUnique({
+                    where: { id: postId },
+                    select: { authorId: true }
+                });
+
+                if (postAuthor && postAuthor.authorId !== userId) {
+                    await prisma.notification.create({
+                        data: {
+                            recipientId: postAuthor.authorId,
+                            actorId: userId,
+                            type: 'POST_LIKE',
+                            postId: postId
+                        }
+                    });
+                }
+                // ===== FIN DE LÓGICA DE NOTIFICACIÓN =====
+                
                 // Devolver el nuevo conteo de likes
                 const newLikesCount = await prisma.reaction.count({ where: { postId, type: reactionTypeToToggle } });
                 return res.status(201).json({ 

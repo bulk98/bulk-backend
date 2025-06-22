@@ -6,6 +6,7 @@ const { authenticateToken } = require('../middleware/auth.middleware');
 const { body, param, validationResult } = require('express-validator');
 const { ReactionType } = require('../constants/reactions');
 const { UserType } = require('@prisma/client');
+const bcrypt = require('bcrypt');
 
 // --- NUEVO: Dependencias para subida de archivos ---
 const multer = require('multer');
@@ -73,11 +74,28 @@ router.put('/me/profile', authenticateToken,
         body('email').optional().isEmail().withMessage('Email inválido.').normalizeEmail(),
         body('tipo_usuario').optional().isIn([UserType.OG, UserType.CREW]).withMessage(`Tipo de usuario debe ser '${UserType.OG}' o '${UserType.CREW}'.`),
         body('name').optional().isString().trim(),
-        body('username').optional().isString().trim(),
+        
+        // ===== INICIO DE LA MODIFICACIÓN =====
+        body('username')
+            .optional() // Permite que el campo no se envíe si no se quiere cambiar
+            .trim()
+            .isLength({ min: 3, max: 20 }).withMessage('El nombre de usuario debe tener entre 3 y 20 caracteres.')
+            .matches(/^[a-zA-Z0-9_]+$/).withMessage('El nombre de usuario solo puede contener letras, números y guion bajo (sin espacios).'),
+        // ===== FIN DE LA MODIFICACIÓN =====
+        
         body('bio').optional({ checkFalsy: true }).isString().trim(),
-        // ... otras validaciones ...
+        body('fechaDeNacimiento')
+            .optional({ nullable: true })
+            .isISO8601()
+            .withMessage('El formato de la fecha de nacimiento es inválido.'),
+        
+        body('paisDeNacimiento').optional().isString().trim(),
+        body('ciudadDeNacimiento').optional().isString().trim(),
+        body('domicilio').optional().isString().trim(),
+        body('celular').optional().isString().trim(),
     ],
     async (req, res) => {
+        // ... (El resto de la lógica de esta ruta no necesita cambios)
         const errors = validationResult(req);
         if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
         
@@ -112,6 +130,7 @@ router.put('/me/profile', authenticateToken,
                 const field = error.meta?.target?.includes('email') ? 'email' : 'username';
                 res.status(409).json({ error: `El ${field} proporcionado ya está en uso.` });
             } else {
+                console.error("Error no manejado al actualizar perfil:", error);
                 res.status(500).json({ error: 'Error al actualizar el perfil.', detalle: error.message });
             }
         }
@@ -698,5 +717,60 @@ router.get('/me/management-info', authenticateToken, async (req, res) => {
         res.status(500).json({ error: 'Error al obtener la información de gestión.', detalle: error.message });
     }
 });
+
+/**
+ * @route   PATCH /api/me/change-password
+ * @desc    Cambiar la contraseña del usuario autenticado
+ * @access  Privado
+ */
+router.patch(
+    '/me/change-password',
+    authenticateToken,
+    [
+        body('currentPassword').notEmpty().withMessage('La contraseña actual es obligatoria.'),
+        body('newPassword').isLength({ min: 6 }).withMessage('La nueva contraseña debe tener al menos 6 caracteres.'),
+        body('confirmPassword').custom((value, { req }) => {
+            if (value !== req.body.newPassword) {
+                throw new Error('Las contraseñas nuevas no coinciden.');
+            }
+            return true;
+        })
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ error: errors.array()[0].msg });
+        }
+
+        const { currentPassword, newPassword } = req.body;
+        const userId = req.userId;
+
+        try {
+            const user = await prisma.user.findUnique({ where: { id: userId } });
+            if (!user) {
+                return res.status(404).json({ error: 'Usuario no encontrado.' });
+            }
+
+            const isMatch = await bcrypt.compare(currentPassword, user.password);
+            if (!isMatch) {
+                return res.status(403).json({ error: 'La contraseña actual es incorrecta.' });
+            }
+
+            const saltRounds = 10;
+            const hashedNewPassword = await bcrypt.hash(newPassword, saltRounds);
+
+            await prisma.user.update({
+                where: { id: userId },
+                data: { password: hashedNewPassword }
+            });
+
+            res.status(200).json({ message: 'Contraseña actualizada con éxito.' });
+
+        } catch (error) {
+            console.error('Error en /me/change-password:', error);
+            res.status(500).json({ error: 'Error interno al cambiar la contraseña.', detalle: error.message });
+        }
+    }
+);
 
 module.exports = router;

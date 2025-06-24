@@ -54,6 +54,14 @@ model User {
   avatarUrl               String?
   avatarPublicId          String?
 
+  // --- NUEVOS CAMPOS PARA RESETEO DE CONTRASEÑA ---
+  passwordResetToken      String?   // Token único para el reseteo
+  passwordResetExpires    DateTime? // Fecha de expiración del token
+
+  // --- NUEVOS CAMPOS PARA VERIFICACIÓN DE CORREO ---
+  isVerified              Boolean?  @default(false)
+  emailVerificationToken  String?   
+
   // --- RELACIONES (SIN CAMBIOS) ---
   createdCommunities      Community[]            @relation("CreatedCommunities")
   memberships             CommunityMembership[]

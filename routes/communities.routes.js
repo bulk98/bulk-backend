@@ -1457,4 +1457,82 @@ router.delete(
     }
 );
 
+/**
+ * @route   GET /api/communities/:communityId/growth-stats
+ * @desc    Obtener datos históricos del crecimiento de miembros para una gráfica
+ * @access  Privado (Solo para el creador de la comunidad)
+ */
+router.get(
+    '/:communityId/growth-stats',
+    authenticateToken,
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.')
+    ],
+    async (req, res) => {
+        const { communityId } = req.params;
+        const requestingUserId = req.userId;
+
+        try {
+            // 1. Verificar que la comunidad exista y que el solicitante sea el creador
+            const community = await prisma.community.findUnique({
+                where: { id: communityId },
+                select: { createdById: true }
+            });
+
+            if (!community) {
+                return res.status(404).json({ error: 'Comunidad no encontrada.' });
+            }
+
+            if (community.createdById !== requestingUserId) {
+                return res.status(403).json({ error: 'No tienes permiso para ver las estadísticas de esta comunidad.' });
+            }
+
+            // 2. Obtener todas las membresías de la comunidad, ordenadas por fecha de unión
+            const memberships = await prisma.communityMembership.findMany({
+                where: {
+                    communityId: communityId,
+                    // Excluimos al creador de la gráfica de crecimiento para medir solo a los miembros que se unen
+                    role: { not: 'CREATOR' }
+                },
+                orderBy: {
+                    assignedAt: 'asc' // Orden ascendente es crucial para el cálculo acumulativo
+                },
+                select: {
+                    assignedAt: true
+                }
+            });
+
+            // 3. Procesar los datos para generar una serie temporal con el total acumulado de miembros
+            if (memberships.length === 0) {
+                return res.status(200).json([]); // Devolver un array vacío si no hay miembros
+            }
+            
+            const dailyJoins = {};
+            for (const membership of memberships) {
+                const date = membership.assignedAt.toISOString().split('T')[0]; // Agrupar por día (YYYY-MM-DD)
+                if (!dailyJoins[date]) {
+                    dailyJoins[date] = 0;
+                }
+                dailyJoins[date]++;
+            }
+
+            let cumulativeMembers = 0;
+            const chartData = Object.keys(dailyJoins).sort().map(date => {
+                cumulativeMembers += dailyJoins[date];
+                // Formato que la librería de gráficas puede consumir fácilmente
+                return {
+                    date: date,
+                    Miembros: cumulativeMembers 
+                };
+            });
+
+            res.status(200).json(chartData);
+
+        } catch (error) {
+            console.error(`Error en GET /:communityId/growth-stats:`, error);
+            res.status(500).json({ error: 'Error interno al obtener las estadísticas de crecimiento.', detalle: error.message });
+        }
+    }
+);
+
 module.exports = router;

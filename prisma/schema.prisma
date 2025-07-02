@@ -34,8 +34,9 @@ enum ReactionType {
 model User {
   id                      String                 @id @default(auto()) @map("_id") @db.ObjectId
   email                   String                 @unique
-  password                String
+  password                String?
   createdAt               DateTime               @default(now())
+  googleId                String?                
 
   // --- CAMPO tipo_usuario AHORA USA EL NUEVO ENUM ---
   tipo_usuario            UserType
@@ -112,9 +113,10 @@ model Community {
   createdById      String                @db.ObjectId
   memberships      CommunityMembership[]
   posts            Post[]                @relation("CommunityPosts")
+  subscriptionPlans SubscriptionPlan[] 
 }
 
-// --- El resto de los modelos (Post, Comment, Reaction) no necesitan cambios en este paso ---
+
 model Post {
   id            String    @id @default(auto()) @map("_id") @db.ObjectId
   title         String
@@ -193,4 +195,19 @@ model Notification {
   communityId  String?          @db.ObjectId
 
   @@index([recipientId, createdAt])
+}
+
+model SubscriptionPlan {
+  id          String   @id @default(auto()) @map("_id") @db.ObjectId
+  name        String   // Ej: "Plan Básico", "Acceso Total"
+  description String?  // "Acceso a contenido premium, señales exclusivas..."
+  price       Float    // El precio del plan, ej: 4.99
+  currency    String   @default("USD") // Moneda, ej: "USD", "MXN"
+  interval    String   @default("month") // Intervalo de cobro: "month" o "year"
+  isActive    Boolean  @default(true) // Para que el OG pueda activar/desactivar planes
+  createdAt   DateTime @default(now())
+
+  // Relación con la Comunidad
+  community   Community @relation(fields: [communityId], references: [id])
+  communityId String    @db.ObjectId
 }

@@ -7,7 +7,7 @@ const { body, validationResult } = require('express-validator');
 const { UserType } = require('@prisma/client'); // Se importa el Enum
 const crypto = require('crypto'); // Se añade la importación del módulo crypto
 const { sendPasswordResetEmail, sendVerificationEmail } = require('../utils/mailer');
-
+const passport = require('passport');
 
 const router = express.Router();
 
@@ -265,5 +265,42 @@ router.get('/verify-email/:token', async (req, res) => {
     }
 });
 
+// --- NUEVAS RUTAS PARA GOOGLE OAUTH ---
+
+// Ruta para iniciar el proceso de autenticación con Google
+// GET /api/auth/google
+router.get('/google',
+  passport.authenticate('google', { scope: ['profile', 'email'] })
+);
+
+// Ruta de Callback a la que Google redirige tras la autenticación
+// GET /api/auth/google/callback
+router.get('/google/callback', 
+  passport.authenticate('google', { failureRedirect: '/login' }),
+  (req, res) => {
+    // En este punto, el usuario ya ha sido autenticado por Passport y está en req.user
+    // Creamos nuestro propio token JWT para nuestra aplicación
+    const token = jwt.sign(
+        { userId: req.user.id, email: req.user.email, tipo_usuario: req.user.tipo_usuario },
+        process.env.JWT_SECRET,
+        { expiresIn: '2h' }
+    );
+    
+    // Guardamos el token y la info del usuario en un objeto para el frontend
+    const userData = {
+        id: req.user.id,
+        email: req.user.email,
+        tipo_usuario: req.user.tipo_usuario,
+        username: req.user.username,
+        avatarUrl: req.user.avatarUrl,
+        name: req.user.name,
+        isVerified: req.user.isVerified
+    };
+
+    // Redirigimos al frontend a una página especial que procesará el token
+    const userString = encodeURIComponent(JSON.stringify(userData));
+    res.redirect(`${process.env.FRONTEND_URL}/auth/callback?token=${token}&user=${userString}`);
+  }
+);
 
 module.exports = router;

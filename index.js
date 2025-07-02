@@ -5,6 +5,9 @@ const express = require('express');
 const cors = require('cors');
 const multer = require('multer');
 const prisma = require('./prismaClient');
+const passport = require('passport');
+const session = require('express-session');
+require('./config/passport-setup.js');
 
 // --- Imports de Routers ---
 const authRoutes = require('./routes/auth.routes');
@@ -17,6 +20,7 @@ const userRoutes = require('./routes/users.routes.js');
 const reactionRoutes = require('./routes/reactions.routes');
 const searchRoutes = require('./routes/search.routes.js');
 const notificationRoutes = require('./routes/notifications.routes');
+const subscriptionPlanRoutes = require('./routes/subscriptionPlans.routes.js');
 
 const app = express();
 const puerto = process.env.PORT || 3000;
@@ -24,6 +28,22 @@ const puerto = process.env.PORT || 3000;
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cors('*'));
+
+// Se configura la sesión de Express, necesaria para Passport
+app.use(session({
+    secret: process.env.SESSION_SECRET || 'un-secreto-muy-secreto', // Añade SESSION_SECRET a tu .env
+    resave: false,
+    saveUninitialized: false,
+    cookie: {
+        secure: process.env.NODE_ENV === 'production', // true en producción
+        maxAge: 24 * 60 * 60 * 1000 // 24 horas
+    }
+}));
+
+// Se inicializa Passport
+app.use(passport.initialize());
+app.use(passport.session());
+// ===== FIN DE LA MODIFICACIÓN =====
 
 // --- Montar Routers ---
 app.use('/api/auth', authRoutes);
@@ -36,7 +56,7 @@ app.use('/api', userRoutes);
 app.use('/api', reactionRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api', notificationRoutes);
-
+app.use('/api', subscriptionPlanRoutes);
 
 // --- Middleware de Errores (sin cambios) ---
 app.use((err, req, res, next) => {

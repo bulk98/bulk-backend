@@ -30,6 +30,49 @@ const isCommunityCreator = async (req, res, next) => {
 };
 
 /**
+ * @route   GET /api/public/communities/:communityId/plans
+ * @desc    Obtener los planes de suscripción activos de una comunidad (para el público)
+ * @access  Público
+ */
+router.get(
+    '/public/communities/:communityId/plans',
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
+        try {
+            const plans = await prisma.subscriptionPlan.findMany({
+                where: {
+                    communityId: req.params.communityId,
+                    isActive: true // Solo mostramos los planes que el OG ha marcado como activos
+                },
+                select: {
+                    id: true,
+                    name: true,
+                    description: true,
+                    price: true,
+                    currency: true,
+                    interval: true,
+                },
+                orderBy: {
+                    price: 'asc' // Ordenar del más barato al más caro
+                }
+            });
+
+            res.status(200).json(plans);
+        } catch (error) {
+            console.error('Error al obtener los planes públicos de la comunidad:', error);
+            res.status(500).json({ error: 'No se pudieron obtener los planes de suscripción.' });
+        }
+    }
+);
+
+/**
  * @route   POST /api/communities/:communityId/plans
  * @desc    Crear un nuevo plan de suscripción para una comunidad
  * @access  Privado (Solo Creador)

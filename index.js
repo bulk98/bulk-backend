@@ -14,8 +14,6 @@ const authRoutes = require('./routes/auth.routes');
 const communityRoutes = require('./routes/communities.routes');
 const postRoutes = require('./routes/posts.routes');
 const commentRoutes = require('./routes/comments.routes');
-// Se elimina la siguiente línea porque el archivo ya no existe
-// const subscriptionRoutes = require('./routes/subscriptions.routes.js'); 
 const userRoutes = require('./routes/users.routes.js');
 const reactionRoutes = require('./routes/reactions.routes');
 const searchRoutes = require('./routes/search.routes.js');
@@ -27,38 +25,35 @@ const puerto = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors('*'));
+app.use(cors({ origin: '*' }));  // <--- CORRECCIÓN AQUI
 
-// Se configura la sesión de Express, necesaria para Passport
+// Sesión para Passport
 app.use(session({
-    secret: process.env.SESSION_SECRET || 'un-secreto-muy-secreto', // Añade SESSION_SECRET a tu .env
+    secret: process.env.SESSION_SECRET || 'un-secreto-muy-secreto',
     resave: false,
     saveUninitialized: false,
     cookie: {
-        secure: process.env.NODE_ENV === 'production', // true en producción
-        maxAge: 24 * 60 * 60 * 1000 // 24 horas
+        secure: process.env.NODE_ENV === 'production',
+        maxAge: 24 * 60 * 60 * 1000
     }
 }));
 
-// Se inicializa Passport
+// Inicializar Passport
 app.use(passport.initialize());
 app.use(passport.session());
-// ===== FIN DE LA MODIFICACIÓN =====
 
 // --- Montar Routers ---
 app.use('/api/auth', authRoutes);
-app.use('/api/communities', communityRoutes); // Ahora maneja también las suscripciones
+app.use('/api/communities', communityRoutes);
 app.use('/api', postRoutes);
 app.use('/api', commentRoutes);
-// Se elimina la siguiente línea
-// app.use('/api', subscriptionRoutes); 
-app.use('/api', userRoutes); 
+app.use('/api', userRoutes);
 app.use('/api', reactionRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api', notificationRoutes);
 app.use('/api', subscriptionPlanRoutes);
 
-// --- Middleware de Errores (sin cambios) ---
+// --- Middleware de Errores ---
 app.use((err, req, res, next) => {
   if (req.fileValidationError) { 
     return res.status(400).json({ errors: [{ msg: req.fileValidationError, path: 'postImage', location: 'file' }] });
@@ -86,13 +81,12 @@ app.use((err, req, res, next) => {
   next();
 });
 
-// --- Ruta Base (sin cambios) ---
+// --- Ruta Base ---
 app.get('/', (req, res) => {
-    res.send('¡El servidor backend de Bulk está funcionando y usando Prisma!');
+    res.send('¡El servidor backend de Bulk está funcionando y usando Prisma! 🚀');
 });
 
-
-// --- Lógica de Cierre Limpio (sin cambios) ---
+// --- Lógica de Cierre Limpio ---
 let prismaDisconnected = false;
 const gracefulShutdown = async (signal) => {
   if (!prismaDisconnected) {
@@ -115,8 +109,7 @@ process.on('beforeExit', async () => {
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 
-
-// --- Inicio del Servidor (sin cambios) ---
+// --- Inicio del Servidor ---
 app.listen(puerto, () => {
   console.log(`Servidor Express escuchando en http://localhost:${puerto}`);
 });

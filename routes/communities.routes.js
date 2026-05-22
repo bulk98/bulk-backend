@@ -232,7 +232,7 @@ router.get(
     }
 );
   
-// --- Endpoint para Ver los Detalles de una Comunidad Específica (MODIFICADO) ---
+// --- Endpoint para Ver los Detalles de una Comunidad Específica ---
 router.get(
     '/:communityId',
     authenticateToken,
@@ -242,25 +242,42 @@ router.get(
         if (!errors.isEmpty()) {
             return res.status(400).json({ errors: errors.array() });
         }
-        const communityId = req.params.communityId;
+
+        const { communityId } = req.params;
         const userId = req.userId;
-        
+
         try {
-            // ===== INICIO DE LA MODIFICACIÓN =====
-            // Usamos Promise.all para ejecutar ambas consultas en paralelo
-            const [comunidad, subscriberCount] = await Promise.all([
-                // Consulta 1: Obtener los detalles de la comunidad
+            const [comunidad, legacySubscriberCount] = await Promise.all([
                 prisma.community.findUnique({
                     where: { id: communityId },
                     select: {
-                        id: true, name: true, description: true, esPublica: true, createdAt: true,
-                        idiomaPrincipal: true, idiomaSecundario: true,
-                        createdById: true, logoUrl: true, bannerUrl: true,
-                        createdBy: { select: { id: true, name: true, username: true, avatarUrl: true } },
-                        _count: { select: { posts: true, memberships: true } },
+                        id: true,
+                        name: true,
+                        description: true,
+                        esPublica: true,
+                        createdAt: true,
+                        idiomaPrincipal: true,
+                        idiomaSecundario: true,
+                        createdById: true,
+                        logoUrl: true,
+                        bannerUrl: true,
+                        createdBy: {
+                            select: {
+                                id: true,
+                                name: true,
+                                username: true,
+                                avatarUrl: true
+                            }
+                        },
+                        _count: {
+                            select: {
+                                posts: true,
+                                memberships: true
+                            }
+                        }
                     }
                 }),
-                // Consulta 2: Contar cuántos usuarios están suscritos a esta comunidad
+
                 prisma.user.count({
                     where: {
                         suscritoAComunidadesIds: {
@@ -269,29 +286,66 @@ router.get(
                     }
                 })
             ]);
-            // ===== FIN DE LA MODIFICACIÓN =====
-            
+
             if (!comunidad) {
                 return res.status(404).json({ error: 'Comunidad no encontrada.' });
             }
- 
-            // Añadimos el nuevo dato al objeto de la comunidad
-            comunidad.premiumSubscribersCount = subscriberCount;
 
-            // El resto de tu lógica de permisos y membresía permanece igual
-            let currentUserMembershipData = { isMember: false, isSubscribed: false };
+            comunidad.premiumSubscribersCount = legacySubscriberCount;
+
+            let currentUserMembershipData = {
+                isMember: false,
+                isSubscribed: false,
+                subscriptionStatus: null,
+                subscription: null
+            };
 
             if (userId) {
-                const userContext = await prisma.user.findUnique({
-                    where: { id: userId },
-                    select: {
-                        suscritoAComunidadesIds: true,
-                        memberships: {
-                            where: { communityId: communityId },
-                            select: { role: true, canPublishPremiumContent: true }
+                const [userContext, communitySubscription] = await Promise.all([
+                    prisma.user.findUnique({
+                        where: { id: userId },
+                        select: {
+                            suscritoAComunidadesIds: true,
+                            memberships: {
+                                where: { communityId },
+                                select: {
+                                    role: true,
+                                    canPublishPremiumContent: true
+                                }
+                            }
                         }
-                    }
-                });
+                    }),
+
+                    prisma.communitySubscription.findFirst({
+                        where: {
+                            subscriberId: userId,
+                            communityId,
+                            status: {
+                                in: ['PENDING', 'ACTIVE']
+                            }
+                        },
+                        orderBy: {
+                            requestedAt: 'desc'
+                        },
+                        select: {
+                            id: true,
+                            status: true,
+                            paymentMethod: true,
+                            paymentReference: true,
+                            userMessage: true,
+                            adminNote: true,
+                            requestedAt: true,
+                            reviewedAt: true,
+                            activatedAt: true,
+                            rejectedAt: true,
+                            canceledAt: true,
+                            expiresAt: true,
+                            planId: true,
+                            communityId: true,
+                            subscriberId: true
+                        }
+                    })
+                ]);
 
                 if (userContext) {
                     if (userContext.memberships && userContext.memberships.length > 0) {
@@ -299,26 +353,33 @@ router.get(
                         currentUserMembershipData.role = userContext.memberships[0].role;
                         currentUserMembershipData.canPublishPremiumContent = userContext.memberships[0].canPublishPremiumContent;
                     }
-                    if (userContext.suscritoAComunidadesIds.includes(communityId)) {
-                        currentUserMembershipData.isSubscribed = true;
-                    }
+
+                    const hasLegacySubscription = userContext.suscritoAComunidadesIds.includes(communityId);
+                    const hasActiveCommunitySubscription = communitySubscription?.status === 'ACTIVE';
+
+                    currentUserMembershipData.isSubscribed = hasLegacySubscription || hasActiveCommunitySubscription;
+                    currentUserMembershipData.subscriptionStatus = communitySubscription?.status || (hasLegacySubscription ? 'ACTIVE' : null);
+                    currentUserMembershipData.subscription = communitySubscription;
                 }
             }
-            
-            const respuestaComunidad = { 
-                ...comunidad, 
-                currentUserMembership: currentUserMembershipData 
+
+            const respuestaComunidad = {
+                ...comunidad,
+                currentUserMembership: currentUserMembershipData
             };
-            
+
             if (!comunidad.esPublica && !respuestaComunidad.currentUserMembership.isMember) {
-                 return res.status(403).json({ error: 'Acceso denegado. Esta comunidad es privada.' });
+                return res.status(403).json({ error: 'Acceso denegado. Esta comunidad es privada.' });
             }
- 
+
             res.status(200).json(respuestaComunidad);
 
         } catch (error) {
             console.error(`Error en GET /api/communities/${communityId}:`, error);
-            res.status(500).json({ error: 'Error al obtener los detalles de la comunidad.', detalle: error.message });
+            res.status(500).json({
+                error: 'Error al obtener los detalles de la comunidad.',
+                detalle: error.message
+            });
         }
     }
 );
@@ -1377,47 +1438,142 @@ router.delete(
   }
 );
 
-// Ruta para suscribirse al contenido premium
+// Ruta para solicitar suscripción al contenido premium
 router.post(
-    '/:communityId/suscripcion', // La ruta ahora es relativa a /api/communities
+    '/:communityId/suscripcion',
     authenticateToken,
-    [ param('communityId').isMongoId().withMessage('ID de comunidad inválido.') ],
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.'),
+        body('paymentMethod')
+            .optional({ checkFalsy: true })
+            .isIn(['NEQUI', 'BINANCE', 'BANK_TRANSFER', 'PAYPAL', 'WHATSAPP', 'EXTERNAL_LINK', 'OTHER'])
+            .withMessage('Método de pago inválido.'),
+        body('paymentReference')
+            .optional({ checkFalsy: true })
+            .trim()
+            .isLength({ max: 200 })
+            .withMessage('La referencia de pago no puede superar 200 caracteres.'),
+        body('userMessage')
+            .optional({ checkFalsy: true })
+            .trim()
+            .isLength({ max: 500 })
+            .withMessage('El mensaje no puede superar 500 caracteres.')
+    ],
     async (req, res) => {
         const errors = validationResult(req);
         if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
         const { communityId } = req.params;
         const userId = req.userId;
-  
+        const { paymentMethod, paymentReference, userMessage } = req.body || {};
+
         try {
-            const user = await prisma.user.findUnique({
-                where: { id: userId },
-                select: { suscritoAComunidadesIds: true }
-            });
-            if (user.suscritoAComunidadesIds.includes(communityId)) {
-                return res.status(200).json({ mensaje: 'Ya estás suscrito.' });
+            const [community, membership, existingSubscription] = await Promise.all([
+                prisma.community.findUnique({
+                    where: { id: communityId },
+                    select: {
+                        id: true,
+                        name: true,
+                        createdById: true
+                    }
+                }),
+
+                prisma.communityMembership.findUnique({
+                    where: {
+                        userId_communityId: {
+                            userId,
+                            communityId
+                        }
+                    },
+                    select: {
+                        id: true,
+                        role: true
+                    }
+                }),
+
+                prisma.communitySubscription.findFirst({
+                    where: {
+                        subscriberId: userId,
+                        communityId,
+                        status: {
+                            in: ['PENDING', 'ACTIVE']
+                        }
+                    },
+                    orderBy: {
+                        requestedAt: 'desc'
+                    }
+                })
+            ]);
+
+            if (!community) {
+                return res.status(404).json({ error: 'Comunidad no encontrada.' });
             }
-  
-            await prisma.user.update({
-                where: { id: userId },
-                data: { suscritoAComunidadesIds: { push: communityId } }
+
+            if (community.createdById === userId) {
+                return res.status(200).json({
+                    mensaje: 'Eres el creador de esta comunidad, ya tienes acceso al contenido premium.',
+                    status: 'ACTIVE'
+                });
+            }
+
+            if (!membership) {
+                return res.status(403).json({
+                    error: 'Debes ser miembro de la comunidad antes de solicitar una suscripción premium.'
+                });
+            }
+
+            if (existingSubscription) {
+                if (existingSubscription.status === 'PENDING') {
+                    return res.status(200).json({
+                        mensaje: 'Ya tienes una solicitud de suscripción pendiente de aprobación por el OG.',
+                        status: existingSubscription.status,
+                        subscription: existingSubscription
+                    });
+                }
+
+                if (existingSubscription.status === 'ACTIVE') {
+                    return res.status(200).json({
+                        mensaje: 'Ya tienes una suscripción premium activa en esta comunidad.',
+                        status: existingSubscription.status,
+                        subscription: existingSubscription
+                    });
+                }
+            }
+
+            const dataToCreate = {
+                subscriberId: userId,
+                communityId,
+                status: 'PENDING'
+            };
+
+            if (paymentMethod !== undefined && paymentMethod !== '') {
+                dataToCreate.paymentMethod = paymentMethod;
+            }
+
+            if (paymentReference !== undefined && paymentReference !== '') {
+                dataToCreate.paymentReference = paymentReference;
+            }
+
+            if (userMessage !== undefined && userMessage !== '') {
+                dataToCreate.userMessage = userMessage;
+            }
+
+            const subscriptionRequest = await prisma.communitySubscription.create({
+                data: dataToCreate
             });
 
-            // Notificar al creador de la comunidad sobre el nuevo suscriptor
-const community = await prisma.community.findUnique({ where: { id: communityId }, select: { createdById: true }});
-if (community) {
-    await prisma.notification.create({
-        data: {
-            recipientId: community.createdById,
-            actorId: userId,
-            type: 'NEW_SUBSCRIBER',
-            communityId: communityId
-        }
-    });
-}
-            res.status(200).json({ mensaje: 'Suscripción al contenido premium realizada con éxito.' });
+            return res.status(202).json({
+                mensaje: 'Tu solicitud de suscripción quedó pendiente de aprobación por el OG.',
+                status: subscriptionRequest.status,
+                subscription: subscriptionRequest
+            });
+
         } catch (error) {
-            res.status(500).json({ error: 'Error interno al procesar la suscripción.', detalle: error.message });
+            console.error('Error en POST /:communityId/suscripcion:', error);
+            res.status(500).json({
+                error: 'Error interno al crear la solicitud de suscripción.',
+                detalle: error.message
+            });
         }
     }
 );

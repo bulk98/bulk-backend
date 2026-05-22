@@ -12,13 +12,11 @@ datasource db {
 
 // --- ENUMS ---
 
-// NUEVO: Enum para el tipo de usuario global. Reemplaza el String.
 enum UserType {
-  OG   // Antes "GURU"
-  CREW // Antes "MEMBER"
+  OG
+  CREW
 }
 
-// SIN CAMBIOS: Los roles dentro de una comunidad se mantienen como están.
 enum RoleInCommunity {
   CREATOR
   MODERATOR
@@ -29,60 +27,88 @@ enum ReactionType {
   LIKE
 }
 
-// --- MODELOS ACTUALIZADOS ---
+enum CommunitySubscriptionStatus {
+  PENDING
+  ACTIVE
+  REJECTED
+  CANCELED
+  EXPIRED
+}
+
+enum ManualPaymentMethod {
+  NEQUI
+  BINANCE
+  BANK_TRANSFER
+  PAYPAL
+  WHATSAPP
+  EXTERNAL_LINK
+  OTHER
+}
+
+enum NotificationType {
+  NEW_COMMENT
+  POST_LIKE
+  NEW_SUBSCRIBER
+  NEW_MEMBER
+  PROMOTION_TO_MODERATOR
+}
+
+// --- MODELOS ---
 
 model User {
-  id                      String                 @id @default(auto()) @map("_id") @db.ObjectId
-  email                   String                 @unique
-  password                String?
-  createdAt               DateTime               @default(now())
-  googleId                String?                
+  id                       String   @id @default(auto()) @map("_id") @db.ObjectId
+  email                    String   @unique
+  password                 String?
+  createdAt                DateTime @default(now())
+  googleId                 String?
 
-  // --- CAMPO tipo_usuario AHORA USA EL NUEVO ENUM ---
-  tipo_usuario            UserType
+  tipo_usuario             UserType
 
-  // --- NUEVOS CAMPOS DE IDENTIDAD Y PERFIL ---
-  name                    String?                // Nombre y Apellido
-  username                String?                @unique // El @usuario público, debe ser único
-  bio                     String?                // Biografía
-  fechaDeNacimiento       DateTime?
-  paisDeNacimiento        String?
-  ciudadDeNacimiento      String?
-  domicilio               String?
-  celular                 String?
-  
-  // --- CAMPOS DE AVATAR (EXISTENTES) ---
-  avatarUrl               String?
-  avatarPublicId          String?
+  name                     String?
+  username                 String?  @unique
+  bio                      String?
+  fechaDeNacimiento        DateTime?
+  paisDeNacimiento         String?
+  ciudadDeNacimiento       String?
+  domicilio                String?
+  celular                  String?
 
-  // --- NUEVOS CAMPOS PARA RESETEO DE CONTRASEÑA ---
-  passwordResetToken      String?   // Token único para el reseteo
-  passwordResetExpires    DateTime? // Fecha de expiración del token
+  avatarUrl                String?
+  avatarPublicId           String?
 
-  // --- NUEVOS CAMPOS PARA VERIFICACIÓN DE CORREO ---
-  isVerified              Boolean?  @default(false)
-  emailVerificationToken  String?   
+  passwordResetToken       String?
+  passwordResetExpires     DateTime?
 
-  // --- RELACIONES (SIN CAMBIOS) ---
-  createdCommunities      Community[]            @relation("CreatedCommunities")
-  memberships             CommunityMembership[]
-  suscritoAComunidadesIds String[]               @db.ObjectId
-  posts                   Post[]                 @relation("PostAuthor")
-  comments                Comment[]              @relation("CommentAuthor")
-  reactions               Reaction[]
-  notificationsAsRecipient Notification[]        @relation("Recipient")
-  notificationsAsActor     Notification[]        @relation("Actor")
+  isVerified               Boolean? @default(false)
+  emailVerificationToken   String?
+
+  createdCommunities       Community[] @relation("CreatedCommunities")
+  memberships              CommunityMembership[]
+  suscritoAComunidadesIds  String[] @db.ObjectId
+
+  posts                    Post[] @relation("PostAuthor")
+  comments                 Comment[] @relation("CommentAuthor")
+  reactions                Reaction[]
+
+  notificationsAsRecipient Notification[] @relation("Recipient")
+  notificationsAsActor     Notification[] @relation("Actor")
+
+  communitySubscriptions         CommunitySubscription[] @relation("UserCommunitySubscriptions")
+  reviewedCommunitySubscriptions CommunitySubscription[] @relation("ReviewedCommunitySubscriptions")
 }
 
 model CommunityMembership {
-  id                      String                 @id @default(auto()) @map("_id") @db.ObjectId
-  role                    RoleInCommunity        @default(MEMBER) // Se mantiene como MEMBER según tu indicación
-  assignedAt              DateTime               @default(now())
-  user                    User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  userId                  String                 @db.ObjectId
-  community               Community              @relation(fields: [communityId], references: [id], onDelete: Cascade)
-  communityId             String                 @db.ObjectId
-  canPublishPremiumContent Boolean               @default(false)
+  id                       String          @id @default(auto()) @map("_id") @db.ObjectId
+  role                     RoleInCommunity @default(MEMBER)
+  assignedAt               DateTime        @default(now())
+
+  user                     User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                   String          @db.ObjectId
+
+  community                Community       @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  communityId              String          @db.ObjectId
+
+  canPublishPremiumContent Boolean         @default(false)
 
   @@unique([userId, communityId])
   @@index([communityId])
@@ -90,47 +116,48 @@ model CommunityMembership {
 }
 
 model Community {
-  id               String                @id @default(auto()) @map("_id") @db.ObjectId
-  name             String                @unique
-  description      String?
-  createdAt        DateTime              @default(now())
-  esPublica        Boolean               @default(true)
-  
-  // --- NUEVO CAMPO DE CATEGORÍA ---
-  categoria        String?               // Categoría/Nicho de la comunidad
+  id                     String   @id @default(auto()) @map("_id") @db.ObjectId
+  name                   String   @unique
+  description            String?
+  createdAt              DateTime @default(now())
+  esPublica              Boolean  @default(true)
 
-  idiomaPrincipal  String?
-  idiomaSecundario String?
+  categoria              String?
 
-  // --- CAMPOS DE IMÁGENES (EXISTENTES) ---
-  logoUrl          String?
-  logoPublicId     String?
-  bannerUrl        String?
-  bannerPublicId   String?
+  idiomaPrincipal        String?
+  idiomaSecundario       String?
 
-  // --- RELACIONES (SIN CAMBIOS) ---
-  createdBy        User                  @relation("CreatedCommunities", fields: [createdById], references: [id])
-  createdById      String                @db.ObjectId
-  memberships      CommunityMembership[]
-  posts            Post[]                @relation("CommunityPosts")
-  subscriptionPlans SubscriptionPlan[] 
+  logoUrl                String?
+  logoPublicId           String?
+  bannerUrl              String?
+  bannerPublicId         String?
+
+  createdBy              User     @relation("CreatedCommunities", fields: [createdById], references: [id])
+  createdById            String   @db.ObjectId
+
+  memberships            CommunityMembership[]
+  posts                  Post[] @relation("CommunityPosts")
+  subscriptionPlans      SubscriptionPlan[]
+  communitySubscriptions CommunitySubscription[]
 }
 
-
 model Post {
-  id            String    @id @default(auto()) @map("_id") @db.ObjectId
+  id            String   @id @default(auto()) @map("_id") @db.ObjectId
   title         String
   content       String
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-  esPremium     Boolean   @default(false)
-  isPinned      Boolean   @default(false)
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+  esPremium     Boolean  @default(false)
+  isPinned      Boolean  @default(false)
   imageUrl      String?
   imagePublicId String?
+
   author        User      @relation("PostAuthor", fields: [authorId], references: [id], onDelete: Cascade)
   authorId      String    @db.ObjectId
+
   community     Community @relation("CommunityPosts", fields: [communityId], references: [id], onDelete: Cascade)
   communityId   String    @db.ObjectId
+
   comments      Comment[] @relation("PostComments")
   reactions     Reaction[]
 
@@ -143,8 +170,10 @@ model Comment {
   content   String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
   author    User     @relation("CommentAuthor", fields: [authorId], references: [id], onDelete: Cascade)
   authorId  String   @db.ObjectId
+
   post      Post     @relation("PostComments", fields: [postId], references: [id], onDelete: Cascade)
   postId    String   @db.ObjectId
 
@@ -155,8 +184,10 @@ model Reaction {
   id        String       @id @default(auto()) @map("_id") @db.ObjectId
   type      ReactionType
   createdAt DateTime     @default(now())
+
   user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   userId    String       @db.ObjectId
+
   post      Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
   postId    String       @db.ObjectId
 
@@ -165,49 +196,75 @@ model Reaction {
   @@index([userId])
 }
 
-// NUEVO: Enum para los tipos de notificación
-enum NotificationType {
-  NEW_COMMENT             // Alguien comentó en tu post
-  POST_LIKE               // Alguien le dio like a tu post
-  NEW_SUBSCRIBER          // Un usuario se suscribió a tu comunidad
-  NEW_MEMBER              // Un usuario se unió a tu comunidad
-  PROMOTION_TO_MODERATOR  // Te han hecho moderador de una comunidad
-}
-
-// NUEVO: Modelo para guardar las notificaciones
 model Notification {
-  id           String           @id @default(auto()) @map("_id") @db.ObjectId
-  createdAt    DateTime         @default(now())
-  isRead       Boolean          @default(false)
-  
-  type         NotificationType // El tipo de notificación
-  
-  // Quién recibe la notificación
-  recipient    User             @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
-  recipientId  String           @db.ObjectId
+  id          String           @id @default(auto()) @map("_id") @db.ObjectId
+  createdAt   DateTime         @default(now())
+  isRead      Boolean          @default(false)
 
-  // Quién generó la notificación (puede ser nulo si el usuario se elimina)
-  actor        User?            @relation("Actor", fields: [actorId], references: [id], onDelete: SetNull)
-  actorId      String?          @db.ObjectId
+  type        NotificationType
 
-  // Enlaces opcionales a otras entidades para crear los links
-  postId       String?          @db.ObjectId
-  communityId  String?          @db.ObjectId
+  recipient   User             @relation("Recipient", fields: [recipientId], references: [id], onDelete: Cascade)
+  recipientId String           @db.ObjectId
+
+  actor       User?            @relation("Actor", fields: [actorId], references: [id], onDelete: SetNull)
+  actorId     String?          @db.ObjectId
+
+  postId      String?          @db.ObjectId
+  communityId String?          @db.ObjectId
 
   @@index([recipientId, createdAt])
 }
 
 model SubscriptionPlan {
   id          String   @id @default(auto()) @map("_id") @db.ObjectId
-  name        String   // Ej: "Plan Básico", "Acceso Total"
-  description String?  // "Acceso a contenido premium, señales exclusivas..."
-  price       Float    // El precio del plan, ej: 4.99
-  currency    String   @default("USD") // Moneda, ej: "USD", "MXN"
-  interval    String   @default("month") // Intervalo de cobro: "month" o "year"
-  isActive    Boolean  @default(true) // Para que el OG pueda activar/desactivar planes
+  name        String
+  description String?
+  price       Float
+  currency    String   @default("USD")
+  interval    String   @default("month")
+  isActive    Boolean  @default(true)
   createdAt   DateTime @default(now())
 
-  // Relación con la Comunidad
   community   Community @relation(fields: [communityId], references: [id])
   communityId String    @db.ObjectId
+
+  communitySubscriptions CommunitySubscription[]
+}
+
+model CommunitySubscription {
+  id               String                      @id @default(auto()) @map("_id") @db.ObjectId
+  status           CommunitySubscriptionStatus @default(PENDING)
+
+  paymentMethod    ManualPaymentMethod?
+  paymentReference String?
+  paymentProofUrl  String?
+
+  userMessage      String?
+  adminNote        String?
+
+  requestedAt      DateTime                    @default(now())
+  reviewedAt       DateTime?
+  activatedAt      DateTime?
+  rejectedAt       DateTime?
+  canceledAt       DateTime?
+  expiresAt        DateTime?
+  updatedAt        DateTime                    @updatedAt
+
+  subscriber       User                        @relation("UserCommunitySubscriptions", fields: [subscriberId], references: [id], onDelete: Cascade)
+  subscriberId     String                      @db.ObjectId
+
+  reviewedBy       User?                       @relation("ReviewedCommunitySubscriptions", fields: [reviewedById], references: [id], onDelete: SetNull)
+  reviewedById     String?                     @db.ObjectId
+
+  community        Community                   @relation(fields: [communityId], references: [id], onDelete: Cascade)
+  communityId      String                      @db.ObjectId
+
+  plan             SubscriptionPlan?           @relation(fields: [planId], references: [id], onDelete: SetNull)
+  planId           String?                     @db.ObjectId
+
+  @@index([subscriberId])
+  @@index([communityId])
+  @@index([communityId, status])
+  @@index([subscriberId, communityId, status])
+  @@index([planId])
 }

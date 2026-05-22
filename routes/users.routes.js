@@ -72,7 +72,7 @@ router.get('/me/profile', authenticateToken, async (req, res) => {
 router.put('/me/profile', authenticateToken,
     [
         body('email').optional().isEmail().withMessage('Email inválido.').normalizeEmail(),
-        body('tipo_usuario').optional().isIn([UserType.OG, UserType.CREW]).withMessage(`Tipo de usuario debe ser '${UserType.OG}' o '${UserType.CREW}'.`),
+        
         body('name').optional().isString().trim(),
         
         // ===== INICIO DE LA MODIFICACIÓN =====
@@ -100,11 +100,11 @@ router.put('/me/profile', authenticateToken,
         if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
         
         const userId = req.userId;
-        const { email, tipo_usuario, name, username, bio, fechaDeNacimiento, paisDeNacimiento, ciudadDeNacimiento, domicilio, celular } = req.body;
+        const { email, name, username, bio, fechaDeNacimiento, paisDeNacimiento, ciudadDeNacimiento, domicilio, celular } = req.body;
   
         const dataToUpdate = {};
         if (email !== undefined) dataToUpdate.email = email;
-        if (tipo_usuario !== undefined) dataToUpdate.tipo_usuario = tipo_usuario;
+        
         if (name !== undefined) dataToUpdate.name = name;
         if (username !== undefined) dataToUpdate.username = username;
         if (bio !== undefined) dataToUpdate.bio = bio;

@@ -7,6 +7,7 @@ const { body, param, validationResult } = require('express-validator');
 const { ReactionType } = require('../constants/reactions');
 const { UserType } = require('@prisma/client');
 const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 
 // --- NUEVO: Dependencias para subida de archivos ---
 const multer = require('multer');
@@ -558,23 +559,104 @@ router.get(
         const skip = (page - 1) * limit;
 
         try {
-            // Verificar si el usuario existe
+            let requestingUserId = null;
+            const authHeader = req.headers['authorization'];
+            const token = authHeader && authHeader.split(' ')[1];
+
+            if (token) {
+                try {
+                    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+                    requestingUserId = decoded.userId;
+                } catch (error) {
+                    requestingUserId = null;
+                }
+            }
+
             const userExists = await prisma.user.count({ where: { id: userId } });
             if (userExists === 0) {
                 return res.status(404).json({ message: 'Usuario no encontrado.' });
             }
 
-            const posts = await prisma.post.findMany({
+            const requesterContext = requestingUserId
+                ? await prisma.user.findUnique({
+                    where: { id: requestingUserId },
+                    select: {
+                        suscritoAComunidadesIds: true,
+                        memberships: {
+                            select: {
+                                communityId: true,
+                                role: true
+                            }
+                        },
+                        createdCommunities: {
+                            select: {
+                                id: true
+                            }
+                        }
+                    }
+                })
+                : null;
+
+            const subscribedCommunityIds = requesterContext?.suscritoAComunidadesIds || [];
+            const createdCommunityIds = requesterContext?.createdCommunities?.map(c => c.id) || [];
+            const moderatorCommunityIds = requesterContext?.memberships
+                ?.filter(m => m.role === 'MODERATOR')
+                .map(m => m.communityId) || [];
+
+            const postsFromDb = await prisma.post.findMany({
                 where: { authorId: userId },
                 orderBy: { createdAt: 'desc' },
                 skip,
                 take: limit,
                 select: {
-                    id: true, title: true, content: true, esPremium: true, createdAt: true, imageUrl: true,
-                    author: { select: { id: true, name: true, username: true, avatarUrl: true } },
-                    community: { select: { id: true, name: true, logoUrl: true } },
-                    _count: { select: { comments: true, reactions: true } }
+                    id: true,
+                    title: true,
+                    content: true,
+                    esPremium: true,
+                    createdAt: true,
+                    imageUrl: true,
+                    authorId: true,
+                    communityId: true,
+                    author: {
+                        select: {
+                            id: true,
+                            name: true,
+                            username: true,
+                            avatarUrl: true
+                        }
+                    },
+                    community: {
+                        select: {
+                            id: true,
+                            name: true,
+                            logoUrl: true
+                        }
+                    },
+                    _count: {
+                        select: {
+                            comments: true,
+                            reactions: true
+                        }
+                    }
                 }
+            });
+
+            const posts = postsFromDb.map(post => {
+                const canViewPremium =
+                    !post.esPremium ||
+                    requestingUserId === post.authorId ||
+                    createdCommunityIds.includes(post.communityId) ||
+                    moderatorCommunityIds.includes(post.communityId) ||
+                    subscribedCommunityIds.includes(post.communityId);
+
+                if (canViewPremium) {
+                    return post;
+                }
+
+                return {
+                    ...post,
+                    content: 'Este es contenido premium. Suscríbete para desbloquearlo.'
+                };
             });
 
             const totalPosts = await prisma.post.count({ where: { authorId: userId } });

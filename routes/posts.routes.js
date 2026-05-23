@@ -340,53 +340,86 @@ router.get(
 
 
 
-// --- NUEVO ENDPOINT PARA FIJAR/DESFIJAR UN POST ---
+// --- Endpoint para fijar/desfijar un post en una comunidad ---
+// PATCH /api/posts/:postId/pin
 router.patch(
     '/posts/:postId/pin',
     authenticateToken,
-    [ param('postId').isMongoId().withMessage("El ID del post no es válido.") ],
+    [
+        param('postId').isMongoId().withMessage("El ID del post no es válido.")
+    ],
     async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+            return res.status(400).json({ errors: errors.array() });
+        }
+
         const { postId } = req.params;
         const userId = req.userId;
 
         try {
-            // 1. Obtener el post y su comunidad para verificar permisos
             const post = await prisma.post.findUnique({
                 where: { id: postId },
-                select: { community: { select: { createdById: true } }, isPinned: true }
+                select: {
+                    id: true,
+                    isPinned: true,
+                    communityId: true,
+                    community: {
+                        select: {
+                            createdById: true
+                        }
+                    }
+                }
             });
 
             if (!post) {
-                return res.status(404).json({ error: 'Publicación no encontrada.' });
+                return res.status(404).json({ error: 'Post no encontrado.' });
             }
 
-            // 2. Verificar si el usuario tiene permisos (es Creador o Moderador de la comunidad)
             const isCreator = post.community.createdById === userId;
-            const membership = await prisma.communityMembership.findFirst({
-                where: { userId, communityId: post.community.id }
+
+            const membership = await prisma.communityMembership.findUnique({
+                where: {
+                    userId_communityId: {
+                        userId,
+                        communityId: post.communityId
+                    }
+                },
+                select: {
+                    role: true
+                }
             });
-            const isModerator = membership?.role === 'MODERATOR';
+
+            const isModerator = membership?.role === RoleInCommunity.MODERATOR;
 
             if (!isCreator && !isModerator) {
-                return res.status(403).json({ error: 'No tienes permiso para fijar publicaciones en esta comunidad.' });
+                return res.status(403).json({
+                    error: 'Solo el creador o un moderador de la comunidad puede fijar o desfijar posts.'
+                });
             }
 
-            // 3. Actualizar el post, invirtiendo el valor de 'isPinned'
             const updatedPost = await prisma.post.update({
                 where: { id: postId },
-                data: { isPinned: !post.isPinned },
-                select: { id: true, isPinned: true } // Devolver el estado actualizado
+                data: {
+                    isPinned: !post.isPinned
+                },
+                select: {
+                    id: true,
+                    isPinned: true
+                }
             });
 
-            res.status(200).json(updatedPost);
+            return res.status(200).json(updatedPost);
 
         } catch (error) {
-            console.error(`Error en PATCH /posts/${postId}/pin:`, error);
-            res.status(500).json({ error: 'Error interno al actualizar el estado del post.', detalle: error.message });
+            console.error('Error en PATCH /posts/:postId/pin:', error);
+            return res.status(500).json({
+                error: 'Error interno al fijar o desfijar el post.',
+                detalle: error.message
+            });
         }
     }
 );
-
 router.put(
     '/posts/:postId',
     authenticateToken,

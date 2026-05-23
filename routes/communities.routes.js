@@ -729,116 +729,129 @@ router.delete(
 );
 
 // --- Endpoint para Listar Miembros de una Comunidad (GET /api/communities/:communityId/members) ---
-// Muestra los miembros de una comunidad, con su rol.
-// Controla el acceso si la comunidad es privada.
 router.get(
-    '/:communityId/members',    // La ruta usa el ID de la comunidad
-    authenticateToken,          // Middleware: Asegura que el usuario esté logueado
+    '/:communityId/members',
+    authenticateToken,
     [
-        // Validación: Asegura que el communityId en la URL sea un ID de MongoDB válido
         param('communityId')
-            .isMongoId().withMessage('El ID de la comunidad no es válido.')
+            .isMongoId()
+            .withMessage('El ID de la comunidad no es válido.')
     ],
     async (req, res) => {
-        // Comprueba si hubo errores de validación en los parámetros de la URL
         const errors = validationResult(req);
         if (!errors.isEmpty()) {
             return res.status(400).json({ errors: errors.array() });
         }
 
-        const communityId = req.params.communityId; // Obtiene el ID de la comunidad desde la URL
-        const requestingUserId = req.userId;        // ID del usuario que hace la petición
-
-        console.log(`>>> Usuario ID ${requestingUserId} solicitando lista de miembros para Comunidad ID ${communityId}`);
+        const { communityId } = req.params;
+        const requestingUserId = req.userId;
 
         try {
-            // 1. Verificar que la comunidad exista y obtener su privacidad y creador
             const comunidad = await prisma.community.findUnique({
                 where: { id: communityId },
-                select: { // Seleccionamos solo los campos necesarios para la lógica de permisos
+                select: {
                     id: true,
                     esPublica: true,
-                    createdById: true // ID del creador de la comunidad
+                    createdById: true
                 }
             });
 
             if (!comunidad) {
-                // Si la comunidad no existe, devuelve 404 (No encontrado)
                 return res.status(404).json({ error: 'Comunidad no encontrada.' });
             }
 
-            // 2. Lógica de Permisos: Verificar si el usuario solicitante puede ver la lista de miembros
-            let canViewMembers = comunidad.esPublica; // Si la comunidad es pública, cualquiera autenticado puede ver
+            let canViewMembers = comunidad.esPublica || comunidad.createdById === requestingUserId;
 
-            if (!comunidad.esPublica) { // Si es privada, se necesita ser miembro o creador
-                if (comunidad.createdById === requestingUserId) { // El creador siempre puede ver
-                    canViewMembers = true;
-                } else {
-                    // Verificar si el usuario solicitante es miembro de esta comunidad
-                    const membership = await prisma.communityMembership.findUnique({
-                        where: {
-                            userId_communityId: {
-                                userId: requestingUserId,
-                                communityId: communityId
-                            }
-                        },
-                        select: { id: true } // Solo necesitamos saber si existe la membresía
-                    });
-                    if (membership) { // Si se encontró una membresía, es miembro
-                        canViewMembers = true;
-                    }
-                }
+            if (!canViewMembers) {
+                const requesterMembership = await prisma.communityMembership.findUnique({
+                    where: {
+                        userId_communityId: {
+                            userId: requestingUserId,
+                            communityId
+                        }
+                    },
+                    select: { id: true }
+                });
+
+                canViewMembers = !!requesterMembership;
             }
 
             if (!canViewMembers) {
-                console.log(`>>> ACCESO DENEGADO: Usuario ${requestingUserId} intentó listar miembros de Comunidad privada ${communityId} sin permiso.`);
-                // Devolvemos 404 para no revelar la existencia de la comunidad a quien no debe saberlo.
                 return res.status(404).json({ error: 'Comunidad no encontrada o acceso denegado.' });
             }
 
-            // 3. Obtener todas las membresías de la comunidad, incluyendo la información del usuario y su rol
             const memberships = await prisma.communityMembership.findMany({
-                where: { communityId: communityId }, // Filtra por el ID de la comunidad
+                where: { communityId },
                 select: {
-                    role: true,         // El rol del miembro en esta comunidad
-                    assignedAt: true,   // Cuándo se unió
-                    canPublishPremiumContent: true,
-                    user: {             // Incluye información del modelo User asociado
-                        select: {
-                            id: true,
-                            email: true,
-                            tipo_usuario: true // El tipo de usuario global (Miembro o GURU)
-                            
-                            // Puedes añadir más campos del usuario si los necesitas, ej: nombre
-                        }
-                    }
+                    userId: true,
+                    role: true,
+                    assignedAt: true,
+                    canPublishPremiumContent: true
                 },
-                orderBy: { // Opcional: Ordenar la lista (ej. por fecha de unión)
+                orderBy: {
                     assignedAt: 'asc'
                 }
             });
-            
-            // Transforma la lista de membresías para una respuesta más clara
-            const memberList = memberships.map(m => ({
-                userId: m.user.id,
-                email: m.user.email,
-                tipoUsuarioGlobal: m.user.tipo_usuario,
-                roleInCommunity: m.role,
-                canPublishPremiumContent: m.canPublishPremiumContent,
-                joinedAt: m.assignedAt
-            }));
 
-            console.log(`✅ Lista de ${memberList.length} miembros devuelta para Comunidad ID ${communityId}.`);
-            // Devuelve 200 (OK) con la lista de miembros
-            res.status(200).json(memberList);
+            const userIds = [
+                ...new Set(
+                    memberships
+                        .map((membership) => membership.userId)
+                        .filter(Boolean)
+                )
+            ];
+
+            const users = userIds.length > 0
+                ? await prisma.user.findMany({
+                    where: {
+                        id: {
+                            in: userIds
+                        }
+                    },
+                    select: {
+                        id: true,
+                        email: true,
+                        name: true,
+                        username: true,
+                        avatarUrl: true,
+                        tipo_usuario: true
+                    }
+                })
+                : [];
+
+            const usersById = new Map(users.map((user) => [user.id, user]));
+
+            const memberList = memberships
+                .filter((membership) => membership.userId && usersById.has(membership.userId))
+                .map((membership) => {
+                    const user = usersById.get(membership.userId);
+
+                    return {
+                        userId: user.id,
+                        email: user.email,
+                        name: user.name,
+                        username: user.username,
+                        avatarUrl: user.avatarUrl,
+                        tipoUsuarioGlobal: user.tipo_usuario,
+                        roleInCommunity: membership.role,
+                        canPublishPremiumContent: membership.canPublishPremiumContent,
+                        joinedAt: membership.assignedAt
+                    };
+                });
+
+            return res.status(200).json(memberList);
 
         } catch (error) {
-            // Si ocurre cualquier otro error
-            console.error(`❌ Error en GET /api/communities/${communityId}/members (listar):`, error);
-            if (error.code === 'P2023' && error.message?.includes("Malformed ObjectID")) {
-                 return res.status(400).json({ message: 'El ID de la comunidad proporcionado no es válido.' });
+            console.error(`Error en GET /api/communities/${communityId}/members:`, error);
+
+            if (error.code === 'P2023' && error.message?.includes('Malformed ObjectID')) {
+                return res.status(400).json({ error: 'El ID de la comunidad proporcionado no es válido.' });
             }
-            res.status(500).json({ error: 'Error al obtener la lista de miembros.', detalle: error.message });
+
+            return res.status(500).json({
+                error: 'Error al obtener la lista de miembros.',
+                detalle: error.message
+            });
         }
     }
 );

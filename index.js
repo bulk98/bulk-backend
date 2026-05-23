@@ -20,12 +20,63 @@ const searchRoutes = require('./routes/search.routes.js');
 const notificationRoutes = require('./routes/notifications.routes');
 const subscriptionPlanRoutes = require('./routes/subscriptionPlans.routes.js');
 
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+
 const app = express();
+
+app.set('trust proxy', 1);
+
+app.use(helmet({
+  crossOriginResourcePolicy: false
+}));
+
 const puerto = process.env.PORT || 3000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(cors({ origin: '*' }));  // <--- CORRECCIÓN AQUI
+// --- CORS controlado ---
+const defaultAllowedOrigins = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  process.env.FRONTEND_URL
+].filter(Boolean);
+
+const extraAllowedOrigins = (process.env.CORS_ORIGINS || '')
+  .split(',')
+  .map(origin => origin.trim())
+  .filter(Boolean);
+
+const allowedOrigins = [...new Set([...defaultAllowedOrigins, ...extraAllowedOrigins])];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin) return callback(null, true);
+
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error(`Origen no permitido por CORS: ${origin}`));
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+  credentials: false
+}));
+
+// --- Rate limit básico para API ---
+const apiLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_MAX || 300),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    error: 'Demasiadas solicitudes. Intenta nuevamente en unos minutos.'
+  },
+  skip: (req) => req.method === 'OPTIONS'
+});
+
+app.use('/api', apiLimiter);
 
 // Sesión para Passport
 app.use(session({

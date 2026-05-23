@@ -463,84 +463,86 @@ router.put(
     }
   );
 
-  // --- Endpoint para Eliminar una Comunidad (DELETE /api/communities/:communityId) ---
-// Permite al creador de una comunidad eliminarla completamente.
+// --- Endpoint para Eliminar una Comunidad (solo GURU creador) ---
+// DELETE /api/communities/:communityId
+
 router.delete(
-    '/:communityId', // La ruta ahora usa :communityId
-    authenticateToken,
-    [ // Validación del parámetro de ruta
-        param('communityId').isMongoId().withMessage('El ID de la comunidad proporcionado no es válido.')
-    ],
-    async (req, res) => {
-        const errors = validationResult(req);
-        if (!errors.isEmpty()) {
-            return res.status(400).json({ errors: errors.array() });
-        }
-  
-        const communityId = req.params.communityId; // Cambiado de req.params.id
-        const userId = req.userId; // ID del usuario que realiza la petición (debe ser el creador)
-  
-        console.log(`>>> Usuario ID ${userId} intentando eliminar Comunidad ID ${communityId}`);
-  
-        try {
-            // 1. Verificar que la comunidad exista y que el usuario sea el creador
-            const comunidadExistente = await prisma.community.findUnique({
-                where: { id: communityId },
-                select: { createdById: true } // Solo necesitamos el ID del creador para verificar el permiso
-            });
-  
-            if (!comunidadExistente) {
-                return res.status(404).json({ error: 'Comunidad no encontrada.' });
-            }
-  
-            if (comunidadExistente.createdById !== userId) {
-                // Solo el creador puede eliminar la comunidad
-                return res.status(403).json({ error: 'No tienes permiso para eliminar esta comunidad.' });
-            }
-  
-            // IMPORTANTE: Lógica de eliminación en cascada
-            // Antes de eliminar la comunidad, necesitas eliminar todas las dependencias:
-            // 1. Comentarios de los posts de esa comunidad (si no se eliminan con los posts)
-            // 2. Posts de esa comunidad
-            // 3. Membresías (CommunityMembership) de esa comunidad
-            // 4. Suscripciones relacionadas (si el array suscritoAComunidadesIds en User debe limpiarse) - Esto es más complejo.
-  
-            // Por ahora, replicamos la lógica simple, pero esto DEBE mejorarse.
-            // Una forma de hacerlo es con transacciones interactivas o múltiples awaits.
-  
-            // Ejemplo de cómo podrías empezar a manejarlo (esto es simplificado):
-            // await prisma.comment.deleteMany({ where: { post: { communityId: communityId } } }); // Si los comentarios no se borran en cascada con los posts
-            await prisma.post.deleteMany({ where: { communityId: communityId } });
-            await prisma.communityMembership.deleteMany({ where: { communityId: communityId } });
-            // Considerar también limpiar `suscritoAComunidadesIds` en los usuarios, aunque esto es más complejo.
-  
-  
-            // 4. Realizar la eliminación de la comunidad
-            const comunidadEliminada = await prisma.community.delete({
-                where: { id: communityId },
-                select: { id: true, name: true } // Devolver info de la comunidad eliminada
-            });
-  
-            console.log(`✅ Comunidad con ID ${communityId} y sus posts/membresías asociados eliminados (lógica simplificada).`);
-            res.status(200).json({
-                mensaje: 'Comunidad y contenido asociado eliminados con éxito (lógica simplificada).',
-                comunidad: comunidadEliminada
-            });
-  
-        } catch (error) {
-            console.error(`❌ Error en DELETE /api/communities/${communityId} (eliminar):`, error);
-            if (error.code === 'P2025') { // "Record to delete not found"
-                 res.status(404).json({ error: 'Comunidad no encontrada para eliminar.', detalle: error.message });
-            } else {
-                // Un error común aquí podría ser P2014 (violación de constraint) si intentas eliminar
-                // una comunidad que todavía tiene posts o membresías y no has configurado onDelete: Cascade
-                // o no los has eliminado manualmente antes.
-                console.error("Detalle del error de Prisma:", error); // Loguear el error completo de Prisma
-                res.status(500).json({ error: 'Error al eliminar la comunidad.', detalle: error.message, code: error.code });
-            }
-        }
+  '/:communityId',
+  authenticateToken,
+  [
+    param('communityId').isMongoId().withMessage("El ID de la comunidad no es válido.")
+  ],
+  async (req, res) => {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ errors: errors.array() });
     }
-  );
+
+    const communityId = req.params.communityId;
+    const userId = req.userId;
+
+    try {
+      // 1. Verificar si la comunidad existe y si el usuario es el creador
+      const comunidad = await prisma.community.findUnique({
+        where: { id: communityId },
+        select: { id: true, createdById: true }
+      });
+
+      if (!comunidad) {
+        return res.status(404).json({ error: 'Comunidad no encontrada.' });
+      }
+
+      if (comunidad.createdById !== userId) {
+        return res.status(403).json({ error: 'Solo el creador de la comunidad puede eliminarla.' });
+      }
+
+      console.log(`🧨 Eliminando comunidad ${communityId} por usuario ${userId}...`);
+
+      // 2. Obtener todos los posts con imagenPublicId para limpiar en Cloudinary
+      const posts = await prisma.post.findMany({
+        where: { communityId },
+        select: { id: true, imagePublicId: true }
+      });
+
+      // 3. Ejecutar eliminación en cascada con transacción
+      await prisma.$transaction(async (tx) => {
+        const postIds = posts.map(p => p.id);
+
+        // Eliminar reacciones a los posts
+        await tx.reaction.deleteMany({ where: { postId: { in: postIds } } });
+
+        // Eliminar comentarios
+        await tx.comment.deleteMany({ where: { postId: { in: postIds } } });
+
+        // Eliminar posts
+        await tx.post.deleteMany({ where: { id: { in: postIds } } });
+
+        // Eliminar membresías
+        await tx.communityMembership.deleteMany({ where: { communityId } });
+
+        // Eliminar comunidad
+        await tx.community.delete({ where: { id: communityId } });
+      });
+
+      // 4. Eliminar imágenes en Cloudinary (fuera de la transacción)
+      for (const post of posts) {
+        if (post.imagePublicId) {
+          try {
+            await deleteFromCloudinary(post.imagePublicId);
+            console.log(`✅ Imagen ${post.imagePublicId} eliminada de Cloudinary.`);
+          } catch (err) {
+            console.warn(`⚠️ Error al borrar imagen ${post.imagePublicId} de Cloudinary: ${err.message}`);
+          }
+        }
+      }
+
+      res.status(200).json({ mensaje: 'Comunidad y recursos asociados eliminados con éxito.' });
+    } catch (error) {
+      console.error('❌ Error en DELETE /api/communities/:communityId:', error);
+      res.status(500).json({ error: 'Error interno al eliminar la comunidad.', detalle: error.message });
+    }
+  }
+);
 
 // --- Endpoint para Unirse a una Comunidad (Refactorizado con CommunityMembership) ---
 // POST /api/communities/:id/members (el usuario autenticado se une)
@@ -1357,85 +1359,350 @@ router.patch(
     }
 );
 
-// --- Endpoint para Eliminar una Comunidad (solo GURU creador) ---
-// DELETE /api/communities/:communityId
+/**
+ * @route   GET /api/communities/:communityId/subscription-requests/pending
+ * @desc    Listar solicitudes premium pendientes de una comunidad
+ * @access  Privado (solo creador/OG de la comunidad)
+ */
+router.get(
+    '/:communityId/subscription-requests/pending',
+    authenticateToken,
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
-router.delete(
-  '/:communityId',
-  authenticateToken,
-  [
-    param('communityId').isMongoId().withMessage("El ID de la comunidad no es válido.")
-  ],
-  async (req, res) => {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
+        const { communityId } = req.params;
+        const userId = req.userId;
 
-    const communityId = req.params.communityId;
-    const userId = req.userId;
+        try {
+            const community = await prisma.community.findUnique({
+                where: { id: communityId },
+                select: { id: true, name: true, createdById: true }
+            });
 
-    try {
-      // 1. Verificar si la comunidad existe y si el usuario es el creador
-      const comunidad = await prisma.community.findUnique({
-        where: { id: communityId },
-        select: { id: true, createdById: true }
-      });
+            if (!community) {
+                return res.status(404).json({ error: 'Comunidad no encontrada.' });
+            }
 
-      if (!comunidad) {
-        return res.status(404).json({ error: 'Comunidad no encontrada.' });
-      }
+            if (community.createdById !== userId) {
+                return res.status(403).json({ error: 'Solo el creador de la comunidad puede ver estas solicitudes.' });
+            }
 
-      if (comunidad.createdById !== userId) {
-        return res.status(403).json({ error: 'Solo el creador de la comunidad puede eliminarla.' });
-      }
+            const requests = await prisma.communitySubscription.findMany({
+                where: {
+                    communityId,
+                    status: 'PENDING'
+                },
+                orderBy: {
+                    requestedAt: 'desc'
+                },
+                select: {
+                    id: true,
+                    status: true,
+                    paymentMethod: true,
+                    paymentReference: true,
+                    paymentProofUrl: true,
+                    userMessage: true,
+                    adminNote: true,
+                    requestedAt: true,
+                    reviewedAt: true,
+                    activatedAt: true,
+                    rejectedAt: true,
+                    canceledAt: true,
+                    expiresAt: true,
+                    subscriber: {
+                        select: {
+                            id: true,
+                            name: true,
+                            username: true,
+                            email: true,
+                            avatarUrl: true
+                        }
+                    },
+                    plan: {
+                        select: {
+                            id: true,
+                            name: true,
+                            price: true,
+                            currency: true,
+                            interval: true
+                        }
+                    }
+                }
+            });
 
-      console.log(`🧨 Eliminando comunidad ${communityId} por usuario ${userId}...`);
+            res.status(200).json({
+                community: {
+                    id: community.id,
+                    name: community.name
+                },
+                requests
+            });
 
-      // 2. Obtener todos los posts con imagenPublicId para limpiar en Cloudinary
-      const posts = await prisma.post.findMany({
-        where: { communityId },
-        select: { id: true, imagePublicId: true }
-      });
-
-      // 3. Ejecutar eliminación en cascada con transacción
-      await prisma.$transaction(async (tx) => {
-        const postIds = posts.map(p => p.id);
-
-        // Eliminar reacciones a los posts
-        await tx.reaction.deleteMany({ where: { postId: { in: postIds } } });
-
-        // Eliminar comentarios
-        await tx.comment.deleteMany({ where: { postId: { in: postIds } } });
-
-        // Eliminar posts
-        await tx.post.deleteMany({ where: { id: { in: postIds } } });
-
-        // Eliminar membresías
-        await tx.communityMembership.deleteMany({ where: { communityId } });
-
-        // Eliminar comunidad
-        await tx.community.delete({ where: { id: communityId } });
-      });
-
-      // 4. Eliminar imágenes en Cloudinary (fuera de la transacción)
-      for (const post of posts) {
-        if (post.imagePublicId) {
-          try {
-            await deleteFromCloudinary(post.imagePublicId);
-            console.log(`✅ Imagen ${post.imagePublicId} eliminada de Cloudinary.`);
-          } catch (err) {
-            console.warn(`⚠️ Error al borrar imagen ${post.imagePublicId} de Cloudinary: ${err.message}`);
-          }
+        } catch (error) {
+            console.error(`Error en GET /:communityId/subscription-requests/pending:`, error);
+            res.status(500).json({
+                error: 'Error interno al obtener solicitudes pendientes.',
+                detalle: error.message
+            });
         }
-      }
-
-      res.status(200).json({ mensaje: 'Comunidad y recursos asociados eliminados con éxito.' });
-    } catch (error) {
-      console.error('❌ Error en DELETE /api/communities/:communityId:', error);
-      res.status(500).json({ error: 'Error interno al eliminar la comunidad.', detalle: error.message });
     }
-  }
+);
+
+/**
+ * @route   PATCH /api/communities/:communityId/subscription-requests/:subscriptionId/approve
+ * @desc    Aprobar una solicitud premium manual
+ * @access  Privado (solo creador/OG de la comunidad)
+ */
+router.patch(
+    '/:communityId/subscription-requests/:subscriptionId/approve',
+    authenticateToken,
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.'),
+        param('subscriptionId').isMongoId().withMessage('ID de solicitud inválido.')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+        const { communityId, subscriptionId } = req.params;
+        const userId = req.userId;
+
+        try {
+            const subscription = await prisma.communitySubscription.findFirst({
+                where: {
+                    id: subscriptionId,
+                    communityId
+                },
+                select: {
+                    id: true,
+                    status: true,
+                    subscriberId: true,
+                    communityId: true,
+                    community: {
+                        select: {
+                            id: true,
+                            name: true,
+                            createdById: true
+                        }
+                    }
+                }
+            });
+
+            if (!subscription) {
+                return res.status(404).json({ error: 'Solicitud de suscripción no encontrada.' });
+            }
+
+            if (subscription.community.createdById !== userId) {
+                return res.status(403).json({ error: 'Solo el creador de la comunidad puede aprobar esta solicitud.' });
+            }
+
+            if (subscription.status !== 'PENDING') {
+                return res.status(409).json({
+                    error: 'Solo se pueden aprobar solicitudes en estado PENDING.',
+                    status: subscription.status
+                });
+            }
+
+            const now = new Date();
+
+            const updatedSubscription = await prisma.communitySubscription.update({
+                where: { id: subscriptionId },
+                data: {
+                    status: 'ACTIVE',
+                    reviewedById: userId,
+                    reviewedAt: now,
+                    activatedAt: now,
+                    expiresAt: null
+                },
+                select: {
+                    id: true,
+                    status: true,
+                    paymentMethod: true,
+                    paymentReference: true,
+                    paymentProofUrl: true,
+                    userMessage: true,
+                    adminNote: true,
+                    requestedAt: true,
+                    reviewedAt: true,
+                    activatedAt: true,
+                    rejectedAt: true,
+                    canceledAt: true,
+                    expiresAt: true,
+                    subscriber: {
+                        select: {
+                            id: true,
+                            name: true,
+                            username: true,
+                            email: true,
+                            avatarUrl: true
+                        }
+                    },
+                    reviewedBy: {
+                        select: {
+                            id: true,
+                            name: true,
+                            username: true
+                        }
+                    }
+                }
+            });
+
+            const subscriber = await prisma.user.findUnique({
+                where: { id: subscription.subscriberId },
+                select: { suscritoAComunidadesIds: true }
+            });
+
+            if (subscriber && !subscriber.suscritoAComunidadesIds.includes(communityId)) {
+                await prisma.user.update({
+                    where: { id: subscription.subscriberId },
+                    data: {
+                        suscritoAComunidadesIds: {
+                            push: communityId
+                        }
+                    }
+                });
+            }
+
+            res.status(200).json({
+                mensaje: 'Solicitud aprobada. La suscripción premium ahora está activa.',
+                subscription: updatedSubscription
+            });
+
+        } catch (error) {
+            console.error(`Error en PATCH /:communityId/subscription-requests/:subscriptionId/approve:`, error);
+            res.status(500).json({
+                error: 'Error interno al aprobar la solicitud.',
+                detalle: error.message
+            });
+        }
+    }
+);
+
+/**
+ * @route   PATCH /api/communities/:communityId/subscription-requests/:subscriptionId/reject
+ * @desc    Rechazar una solicitud premium manual
+ * @access  Privado (solo creador/OG de la comunidad)
+ */
+router.patch(
+    '/:communityId/subscription-requests/:subscriptionId/reject',
+    authenticateToken,
+    [
+        param('communityId').isMongoId().withMessage('ID de comunidad inválido.'),
+        param('subscriptionId').isMongoId().withMessage('ID de solicitud inválido.'),
+        body('adminNote')
+            .optional({ checkFalsy: true })
+            .trim()
+            .isLength({ max: 500 })
+            .withMessage('La nota no puede superar 500 caracteres.')
+    ],
+    async (req, res) => {
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
+
+        const { communityId, subscriptionId } = req.params;
+        const userId = req.userId;
+        const { adminNote } = req.body;
+
+        try {
+            const subscription = await prisma.communitySubscription.findFirst({
+                where: {
+                    id: subscriptionId,
+                    communityId
+                },
+                select: {
+                    id: true,
+                    status: true,
+                    community: {
+                        select: {
+                            id: true,
+                            name: true,
+                            createdById: true
+                        }
+                    }
+                }
+            });
+
+            if (!subscription) {
+                return res.status(404).json({ error: 'Solicitud de suscripción no encontrada.' });
+            }
+
+            if (subscription.community.createdById !== userId) {
+                return res.status(403).json({ error: 'Solo el creador de la comunidad puede rechazar esta solicitud.' });
+            }
+
+            if (subscription.status !== 'PENDING') {
+                return res.status(409).json({
+                    error: 'Solo se pueden rechazar solicitudes en estado PENDING.',
+                    status: subscription.status
+                });
+            }
+
+            const now = new Date();
+
+            const dataToUpdate = {
+                status: 'REJECTED',
+                reviewedById: userId,
+                reviewedAt: now,
+                rejectedAt: now
+            };
+
+            if (adminNote !== undefined && adminNote !== '') {
+                dataToUpdate.adminNote = adminNote;
+            }
+
+            const updatedSubscription = await prisma.communitySubscription.update({
+                where: { id: subscriptionId },
+                data: dataToUpdate,
+                select: {
+                    id: true,
+                    status: true,
+                    paymentMethod: true,
+                    paymentReference: true,
+                    paymentProofUrl: true,
+                    userMessage: true,
+                    adminNote: true,
+                    requestedAt: true,
+                    reviewedAt: true,
+                    activatedAt: true,
+                    rejectedAt: true,
+                    canceledAt: true,
+                    expiresAt: true,
+                    subscriber: {
+                        select: {
+                            id: true,
+                            name: true,
+                            username: true,
+                            email: true,
+                            avatarUrl: true
+                        }
+                    },
+                    reviewedBy: {
+                        select: {
+                            id: true,
+                            name: true,
+                            username: true
+                        }
+                    }
+                }
+            });
+
+            res.status(200).json({
+                mensaje: 'Solicitud rechazada.',
+                subscription: updatedSubscription
+            });
+
+        } catch (error) {
+            console.error(`Error en PATCH /:communityId/subscription-requests/:subscriptionId/reject:`, error);
+            res.status(500).json({
+                error: 'Error interno al rechazar la solicitud.',
+                detalle: error.message
+            });
+        }
+    }
 );
 
 // Ruta para solicitar suscripción al contenido premium
